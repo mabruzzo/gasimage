@@ -1,26 +1,11 @@
 import numpy as np
 import yt
 
-def _unit_anyclose(a,b,rtol=1e-05, atol=1e-08):
-    if np.size(b) == 0 or np.size(a) == 0:
-        return np.array([],dtype = np.bool)
-    else:
-        a = np.asanyarray(a)
-        b = np.asanyarray(b)
-    #print(a)
-    #print(b)
-    diff = np.abs(a-b)
-    atol = yt.YTQuantity(atol,diff.units)
-    
-    return diff <= (atol + rtol* b)
-
-
-def ray_box_intersections(line_start, line_uvec, left_edge, right_edge,
-                          atol = 1e-15, rtol = 1e-14):
+def ray_box_intersections(line_start, line_uvec, left_edge, right_edge):
     """
     This assumes that the each face of the box runs parallel to the
     coordinate axes
-    
+
     Parameters
     ----------
     line_start: np.ndarray
@@ -32,14 +17,14 @@ def ray_box_intersections(line_start, line_uvec, left_edge, right_edge,
         An array of shape (3,) that holds the lower left corner of the box
     right_edge: np.ndarray
         An array of shape (3,) that holds the upper right corner of the box
-        
+
     Returns
     -------
     distances: list of floats
         An array of up to 2 elements that specify the intersection locations.
 
-    Notes
-    -----
+    Algorithm
+    ---------
     The ordering of coordinates doesn't matter as long as its consistent
 
     Following the explanation of the Wikipedia article on line-plane intersections:
@@ -58,79 +43,149 @@ def ray_box_intersections(line_start, line_uvec, left_edge, right_edge,
     the other components are zero. The distance to intersection with
     that location is:
           d = (plane_point[i] - line_start[i]) / line_uvec[i]
+
+    Notes
+    -----
+    The following paper details a faster approach if we just want to know 
+    whether the ray intersects the box:
+        Williams, Barrus, Morley, & Shirley: An Efficient and Robust Ray-Box 
+        Intersection Algorithm. J. Graph. Tools 10(1): 49-54 (2005)
+    It's likely that we could take elements of their algorithm to improve this
+    implementation. 
     """
     
-    # this could be substantially optimized
+    assert (line_uvec != 0).any()
+
+    out = np.empty((2,), dtype = np.float64)
     
-    if isinstance(line_start,yt.YTArray):
-        units = line_start.uq
-        assert isinstance(left_edge, yt.YTArray)
-        assert isinstance(right_edge, yt.YTArray)
-        left_edge = left_edge.to(line_start.units).v
-        right_edge = right_edge.to(line_start.units).v
-        line_start = line_start.v
+    problem = False
+    result_dtype = np.result_type(line_start, line_uvec,
+                                  left_edge, right_edge)
+    _init_min_intersect_d = np.finfo(result_dtype).min
+    _init_max_intersect_d = np.finfo(result_dtype).max
+    
+    min_intersect_d = np.finfo(np.float64).min
+    max_intersect_d = np.finfo(np.float64).max
+
+
+    for i in range(3):
+        if line_uvec[i] == 0:
+            if ((line_start[i] < left_edge[i]) or
+                (line_start[i] >= right_edge[i])):
+                # asymmetrical comparison is intentional
+
+                # modify the values to indicate that there is
+                # no intersection at all
+                max_intersect_d = _init_min_intersect_d
+                min_intersect_d = _init_max_intersect_d
+                break
+            else:
+                continue
+        elif line_uvec[i] > 0:
+            axis_min_d = (left_edge[i] - line_start[i]) / line_uvec[i]
+            axis_max_d = (right_edge[i] - line_start[i]) / line_uvec[i]
+        else:
+            axis_min_d = (right_edge[i] - line_start[i]) / line_uvec[i]
+            axis_max_d = (left_edge[i] - line_start[i]) / line_uvec[i]
+
+        if axis_min_d > min_intersect_d: # not a typo!
+            min_intersect_d = axis_min_d
+
+        if axis_max_d < max_intersect_d: # not a typo!
+            max_intersect_d = axis_max_d
+
+    if (max_intersect_d < min_intersect_d) or (max_intersect_d <= 0): 
+        # We do need to check that max_intersect_d is not zero (when 
+        # it's zero, the only point of intersection is on the right 
+        # edge
+        # Unsure if we need to explicitly check that max_intersect_d
+        # is non-negative.
+        return np.array([], dtype = np.float64)
+    elif min_intersect_d == max_intersect_d:
+        # intersection with a corner
+        return np.array([min_intersect_d])
+    elif min_intersect_d < 0: # ray starts inside of the box
+        # should we differentiate this from corner-intersection?
+        return np.array([max_intersect_d])
     else:
-        assert not isinstance(left_edge, yt.YTArray)
-        assert not isinstance(right_edge, yt.YTArray)
-        units = None
-        
+        return np.array([min_intersect_d,max_intersect_d])
 
-    assert not isinstance(line_uvec,yt.YTArray)
+def _floor_subtract_divide(a, b, divisor):
+    """
+    Computes floor((a - b)/divisor).
 
-    distances = []
-    for corner in (left_edge, right_edge):
-        for i in range(3): # iterate over faces that intersect corner
-            # the normal vector for the current face has a value of
-            # zero along each axis, except for axis i (where it's 1
-            # or -1)
+    This correctly handles the case when a >> b or a << b
+    """
 
-            if line_uvec[i] == 0:
-                continue
-            d = (corner[i] - line_start[i]) / line_uvec[i]
-            if d < 0:
-                continue
+    # perform a compensated difference
+    diff = a - b
+    truncated_amount = a - (diff + b)
+    # diff + truncated_amount gives the correct difference
 
-            if np.isclose(d,distances,atol=atol,rtol=rtol).any():
-                continue
-            intersection = line_start + line_uvec*d
-            intersection[i] = corner[i] # this is essential
-            if np.logical_and(
-                np.logical_or(intersection > left_edge,
-                              np.isclose(intersection,left_edge,atol=atol,rtol=rtol)),
-                np.logical_or(intersection <= right_edge,
-                              np.isclose(intersection,right_edge,atol=atol,rtol=rtol))).all():
-                distances.append(d)
-    distances = np.array(distances)
-    distances.sort()
-    #print(distances)
-    assert len(distances) <= 2
-    if units is None:
-        return np.array(distances)
-    else:
-        return np.array(distances) * units
+    quotient = diff / divisor
+    out = np.floor(quotient)
+    # it's possible to refactor to avoid the division on the following line
+    if (out == quotient) and ((np.sign(truncated_amount) * np.sign(divisor)) < 0):
+        return out - 1
+    return out
+
+def _ceil_subtract_divide(a, b, divisor):
+    """
+    Computes ceil((a - b)/divisor).
+
+    This correctly handles the case when a >> b or a << b
+    """
+    # perform a compensated difference
+    diff = a - b
+    truncated_amount = a - (diff + b)
+
+    quotient = diff / divisor
+    out = np.ceil(quotient)
+    if (out == quotient) and ((np.sign(truncated_amount) * np.sign(divisor)) > 0):
+        return out + 1
+    return out
 
 def _starting_index(line_uvec, line_start,
-                    grid_left_edge, cell_width, 
+                    grid_left_edge, cell_width,
                     grid_shape):
     # identify the index of the first cell-centered that the ray
     # intersects
 
+    # I think it's probably important that we calculate the right grid edge
+    # (even if we had access to the precomputed value)
     grid_right_edge = grid_left_edge + cell_width * grid_shape
-    if np.logical_and(grid_left_edge < line_start,
-                      grid_right_edge > line_start).all():
-        # the ray starts within the box
+
+    intersect_t = ray_box_intersections(line_start, line_uvec,
+                                        grid_left_edge, grid_right_edge)
+    if len(intersect_t) != 2:
+        # the ray starts within the box, just hits the lower left corner,
+        # or never intersects the box
         raise NotImplementedError()
     else:
-        # assume that line_start is where the line intersects the grid
+        t_start = intersect_t[0]
 
-        # compute the normalized index. An integer value coincides with 
+        # compute location where line intersects the grid
+        line_entry = np.clip(
+            line_start + line_uvec * t_start,
+            a_min = grid_left_edge,
+            a_max = grid_right_edge,
+        )
+
+        # compute the normalized index. An integer value coincides with
         # a cell face (a value of 0 coincides with the left edge of the
         # leftmost cell)
-        normalized_index = ((line_start - grid_left_edge) / cell_width)
+        normalized_index = np.clip(
+            ((line_entry - grid_left_edge) / cell_width),
+            a_min = (0,0,0),
+            a_max = np.array(grid_shape) + 1
+        )
         #print(normalized_index)
-        #print(int((line_start/cell_width - grid_left_edge/cell_width)[0]))
+        #print(int((line_entry/cell_width - grid_left_edge/cell_width)[0]))
 
         # compute the first cell-centered index including the cell
+        # compute the normalized_index:
+        #     normalized_index = (line_entry - grid_left_edge) / cell_width
+        #
         # normalized_index:    (i-1)     i     (i+1)
         #                        +-------+-------+
         #                        |       |       |
@@ -141,50 +196,49 @@ def _starting_index(line_uvec, line_start,
         # a non-integer normalized_index is always floor(normalized_index)
         cell_index = np.empty((3,),dtype=np.int64)
         for i in range(3):
-            if line_uvec[i] == 0:
-                # if int(normalized_index) == normalized_index
-                # the ray's starting index is the cell for which the ray
-                # is on the LEFT edge
-                cell_index[i] = int(np.floor(normalized_index[i]))
-                assert cell_index[i] < grid_shape[i] # sanity check
-            elif line_uvec[i] > 0:
-                # if int(normalized_index) == normalized_index
-                # the ray's starting index is the cell for which the ray
-                # is on the LEFT edge
-                cell_index[i] = int(np.floor(normalized_index[i]))
+            if line_uvec[i] >= 0:
+                # (handle line_uvec[i] == 0 AND line_uvec[i] > 0)
+                #
+                # if int(normalized_index) == normalized_index, the ray's starting
+                # index is the cell for which the ray is on the LEFT edge
+                #
+                # index[i] = floor(normalized_index[i])
+                #   = floor((line_entry[i] - grid_left_edge[i]) / cell_width[i])
+                cell_index[i] = int(_floor_subtract_divide(
+                    line_entry[i], grid_left_edge[i], cell_width[i]
+                ))
             else: # inv_line_uvec[i] < 0
-                # if int(normalized_index) == normalized_index
-                # the ray's starting index is the cell for which the ray
-                # is on the RIGHT edge
-                cell_index[i] = int(np.ceil(normalized_index[i])) - 1
-
-                if cell_index[i] == grid_right_edge[i]:
-                    # this can happen if floating point round-off errors are
-                    # being troublesome
-                    #
-                    # in the future, once we have this function support points
-                    # starting outside of the grid, we will clip this
-                    eps = np.finfo(line_start.dtype).eps
-                    if (np.abs(line_start[i] - grid_right_edge[i]) <
-                        eps * np.abs(grid_right_edge)):
-                        cell_index[i] -= 1
-        dist_from_line_start = 0.0
+                # if int(normalized_index) == normalized_index, the ray's starting
+                # index is the cell for which the ray is on the RIGHT edge
+                #
+                # index[i] = ceil(normalized_index[i]) - 1
+                #   = ceil((line_entry[i] - grid_left_edge[i]) / cell_width[i]) - 1
+                cell_index[i] = int(_ceil_subtract_divide(
+                    line_entry[i], grid_left_edge[i], cell_width[i]
+                )) - 1
 
     if (np.logical_or(cell_index < 0, cell_index >= np.array(grid_shape)).any() or
-        dist_from_line_start < 0.0):
+        t_start < 0.0):
         print("Problems were encountered while determining the starting index.")
         print('line_start:', line_start)
         print('line_uvec:', line_uvec)
         print(f'grid_left_edge: {grid_left_edge} '
               f'grid_right_edge: {grid_right_edge}')
-        print(grid_right_edge - line_start)
-        print(line_start[0], grid_right_edge[0])
+        print(grid_right_edge - line_entry)
+        print(line_entry[0], grid_right_edge[0])
         print('starting index: ', cell_index)
         print('grid_shape: ', grid_shape)
-        print(dist_from_line_start)
+        print(t_start)
+        print(intersect_t)
+        print('Entry: ', (line_start + line_uvec * intersect_t[0]))
+        print('Exit: ', (line_start + line_uvec * intersect_t[1]))
+        print('Normalized: ', (line_entry[2] == grid_right_edge[2]))
+
+        print()
+
         raise AssertionError()
 
-    return cell_index, dist_from_line_start
+    return cell_index, t_start
 
 
 

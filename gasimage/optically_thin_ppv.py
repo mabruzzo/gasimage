@@ -89,19 +89,17 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
     if len(intersect_dist) < 2:
         out[:] = 0.0
     else:
-        line_grid_entry = ray_start + intersect_dist.min()*ray_uvec
-        
         try:
             tmp_idx, dz = traverse_grid(
                 line_uvec = ray_uvec,
-                line_start = line_grid_entry,
+                line_start = ray_start,
                 grid_left_edge = grid_left_edge,
                 cell_width = cell_width,
                 grid_shape = grid_shape)
         except:
             print('There was a problem!')
             pairs = [('line_uvec', ray_uvec),
-                     ('line_start', line_grid_entry),
+                     ('line_start', ray_start),
                      ('grid_left_edge', grid_left_edge),
                      ('cell_width', cell_width)]
             for name, arr in pairs:
@@ -190,16 +188,13 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
                             dtype = np.float64)
     for grid_ind in range(ds.index.grids.size):
         grid = ds.index.grids[grid_ind]
-        print(grid)
+        print(grid, grid_ind)
         grid_shape = ds.index.grid_dimensions[grid_ind]
         left_edge = ds.index.grid_left_edge[grid_ind].to(length_unit_name).v
         right_edge = ds.index.grid_right_edge[grid_ind].to(length_unit_name).v
         cell_width = ((right_edge - left_edge)/np.array(grid.shape))
 
         for i, cur_ray_stop in enumerate(ray_stop_2D):
-
-            if i < 64:
-                continue
 
             ray_vec = cur_ray_stop - ray_start
             ray_uvec = (ray_vec/np.sqrt((ray_vec*ray_vec).sum()))

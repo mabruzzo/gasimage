@@ -76,5 +76,38 @@ def test_traverse_grid2():
                                    grid_shape = grid_shape)
         print(idx)
 
+
+
+def test_traverse_grid_small_truncation_probs():
+    # This a test that makes sure that we appropriately handle truncation
+    # errors. I'm not completely sure that the answer is correct
+    line_start = np.array([-5.37672641e-31, -1.75617212e-15,
+                           1.43402336e+01])
+    line_uvec = np.array([ 3.74939946e-32,  1.22464680e-16,
+                           -1.00000000e+00])
+    grid_left_edge = np.array([-7.5, -5.,0. ])
+    grid_right_edge = np.array([0.0, 0.0, 5. ])
+    cell_width = np.array([0.125, 0.125, 0.125])
+    grid_shape = (60, 40, 40)
+    idx, dists = traverse_grid(line_uvec = line_uvec,
+                               line_start = line_start,
+                               grid_left_edge = grid_left_edge,
+                               cell_width = cell_width,
+                               grid_shape = grid_shape)
+
+    expected_idx = np.array(
+        [[59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59,
+          59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59,
+          59, 59, 59, 59, 59, 59],
+         [39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39,
+          39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39,
+          39, 39, 39, 39, 39, 39],
+         [39, 38, 37, 36, 35, 34, 33, 32, 31, 30, 29, 28, 27, 26, 25, 24, 23,
+          22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10,  9,  8,  7,  6,
+          5,  4,  3,  2,  1,  0]]
+    )
+    assert (expected_idx == idx).all()
+
 if __name__ == '__main__':
+    test_traverse_grid_small_truncation_probs()
     test_traverse_grid2()
