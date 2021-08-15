@@ -1,59 +1,10 @@
 import numpy as np
 import yt
 
+from ._ray_intersections_cy import ray_box_intersections
+
+"""
 def ray_box_intersections(line_start, line_uvec, left_edge, right_edge):
-    """
-    This assumes that the each face of the box runs parallel to the
-    coordinate axes
-
-    Parameters
-    ----------
-    line_start: np.ndarray
-        An array of shape (3,) representing the starting point of the line
-    line_uvec: np.ndarray
-        An array of shape (3,) that holds the unit vector that parameterizes 
-        the line. This should be unitless
-    left_edge: np.ndarray
-        An array of shape (3,) that holds the lower left corner of the box
-    right_edge: np.ndarray
-        An array of shape (3,) that holds the upper right corner of the box
-
-    Returns
-    -------
-    distances: list of floats
-        An array of up to 2 elements that specify the intersection locations.
-
-    Algorithm
-    ---------
-    The ordering of coordinates doesn't matter as long as its consistent
-
-    Following the explanation of the Wikipedia article on line-plane intersections:
-      - The line can be parameterized as: line_start + line_uvec*d (here, d 
-        represents distance since it's multiplied by a unit vector)
-      - Consider a plane with normal vector, norm_vec, and that includes the
-        point, plane_point
-      - The line intersects the plane at a distance:
-          d = ( ((plane_point - line_start) @ norm_vec) /
-                 (norm_vec @ line_uvec))
-        where the @ operator represents a dot product
-
-    For this particular problem, norm_vec is aligned with an axis so that
-    simplifies things. Consider the plane where the ith component of norm_vec
-    is 1 or -1 (it doesn't matter since the negative sign cancels out) and 
-    the other components are zero. The distance to intersection with
-    that location is:
-          d = (plane_point[i] - line_start[i]) / line_uvec[i]
-
-    Notes
-    -----
-    The following paper details a faster approach if we just want to know 
-    whether the ray intersects the box:
-        Williams, Barrus, Morley, & Shirley: An Efficient and Robust Ray-Box 
-        Intersection Algorithm. J. Graph. Tools 10(1): 49-54 (2005)
-    It's likely that we could take elements of their algorithm to improve this
-    implementation. 
-    """
-    
     assert (line_uvec != 0).any()
 
     out = np.empty((2,), dtype = np.float64)
@@ -109,6 +60,7 @@ def ray_box_intersections(line_start, line_uvec, left_edge, right_edge):
         return np.array([max_intersect_d])
     else:
         return np.array([min_intersect_d,max_intersect_d])
+"""
 
 def _floor_subtract_divide(a, b, divisor):
     """
