@@ -9,8 +9,13 @@ cdef extern from "math.h":
     cdef double ceil(double arg)
     cdef double floor(double arg)
 
-cdef double _INIT_MIN_INTERSECT_D = np.finfo(np.float64).min
-cdef double _INIT_MAX_INTERSECT_D = np.finfo(np.float64).max
+# _MAX_DOUBLE = np.finfo(np.float64).max
+DEF _MAX_DOUBLE = 1.7976931348623157e+308
+DEF _INIT_MAX_INTERSECT_D = 1.7976931348623157e+308
+
+# _MIN_DOUBLE = np.finfo(np.float64).min
+DEF _MIN_DOUBLE = -1.7976931348623157e+308
+DEF _INIT_MIN_INTERSECT_D = -1.7976931348623157e+308
 
 cdef struct IntersectionPair:
     double min_t
@@ -300,25 +305,53 @@ def _starting_index(const double[:] line_uvec, const double[:] line_start,
                                                 line_start[2]))
         print('line_uvec: ({}, {}, {})'.format(line_uvec[0], line_uvec[1],
                                                line_uvec[2]))
-        #print(f'grid_left_edge: {grid_left_edge} '
-        #      f'grid_right_edge: {grid_right_edge}')
-        #print(grid_right_edge_arr - line_entry_arr)
-        #print(line_entry[0], grid_right_edge[0])
-        #print('starting index: ', cell_index)
-        #print('grid_shape: ', grid_shape)
         print(t_start)
-        #print(intersect_t)
-        #print('Entry: ', (line_start + line_uvec * intersect_t[0]))
-        #print('Exit: ', (line_start + line_uvec * intersect_t[1]))
-        #print('Normalized: ', (line_entry[2] == grid_right_edge[2]))
-
-        #print()
 
         raise AssertionError()
 
     return cell_index_arr, t_start
 
 
+cdef struct CalcNextFaceTParams:
+    double[3] line_uvec
+    double[3] grid_left_edge
+    double[3] line_start
+    double[3] cell_width
+
+cdef _calc_next_face_alt_t(Py_ssize_t axis,
+                          int[:] cur_cell_index,
+                           CalcNextFaceTParams params):
+    # compute the distance to the next face from the 
+    # start of the line
+
+    # first, compute determine the index of the next face
+    # note: face-index 0 corresponds to the left face of the
+    # cell with index = 0
+
+    #print(params.line_uvec[0], params.line_uvec[1], params.line_uvec[2])
+    #print(params.grid_left_edge[0], params.grid_left_edge[1],
+    #      params.grid_left_edge[2])
+    #print(params.line_start[0], params.line_start[1], params.line_start[2])
+    #print(params.cell_width[0], params.cell_width[1], params.cell_width[2])
+
+    cdef int next_face_ind
+    if params.line_uvec[axis] > 0:
+        next_face_ind = cur_cell_index[axis] + 1
+    elif params.line_uvec[axis] < 0:
+        next_face_ind = cur_cell_index[axis]
+    else:
+        raise RuntimeError()
+
+    cdef double next_face_pos = (
+        params.grid_left_edge[axis] + next_face_ind * params.cell_width[axis]
+    )
+
+    cdef double out = (
+        (next_face_pos - params.line_start[axis]) / params.line_uvec[axis]
+    )
+    if out < 0:
+        raise AssertionError()
+    return out
 
 def traverse_grid(line_uvec, line_start,
                   grid_left_edge, cell_width,
@@ -374,11 +407,6 @@ def traverse_grid(line_uvec, line_start,
     indices = np.empty((3,max_num), np.int64)
     distances = np.empty((max_num,), np.float64)
 
-    delta_index = np.array(
-        [int(np.sign(e)) for e in line_uvec],
-        dtype = np.int64
-    )
-
     def _calc_next_face_t(axis, cur_cell_index):
         # compute the distance to the next face from the 
         # start of the line
@@ -386,6 +414,12 @@ def traverse_grid(line_uvec, line_start,
         # first, compute determine the index of the next face
         # note: face-index 0 corresponds to the left face of the
         # cell with index = 0
+
+        print(line_uvec[0], line_uvec[1], line_uvec[2])
+        print(grid_left_edge[0], grid_left_edge[1],
+              grid_left_edge[2])
+        print(line_start[0], line_start[1], line_start[2])
+        print(cell_width[0], cell_width[1], cell_width[2])
 
         if line_uvec[axis] > 0:
             next_face_ind = cur_cell_index[axis] + 1
@@ -398,20 +432,18 @@ def traverse_grid(line_uvec, line_start,
             grid_left_edge[axis] + next_face_ind * cell_width[axis]
         )
 
-        
-
         out = (next_face_pos - line_start[axis]) / line_uvec[axis]
         if out < 0:
-            print('\naxis = ', axis)
-            print('next_face_ind:', next_face_ind)
-            print('next_face_pos:', next_face_pos)
-            print('line_start:', line_start[axis])
-            print('grid_left_edge:', grid_left_edge[axis])
-            print('line_uvec:', line_uvec)
-            print('cur_cell_index:', cur_cell_index[axis])
             raise AssertionError()
         return out
+    cdef Py_ssize_t axis
 
+    cdef CalcNextFaceTParams params
+    for axis in range(3):
+        params.line_uvec[axis] = line_uvec[axis]
+        params.line_start[axis] = line_start[axis]
+        params.grid_left_edge[axis] = grid_left_edge[axis]
+        params.cell_width[axis] = cell_width[axis]
 
     # compute the index or the first cell that the ray
     # intersects
@@ -420,34 +452,48 @@ def traverse_grid(line_uvec, line_start,
          np.array(grid_shape, dtype = np.float64)
     )
 
-    next_face_t = np.empty((3,), dtype = np.float64)
+    # now actually actually compute the t values corresponding to the locations
+    # where the ray will cross the next cell face along each axis
+    cdef double[3] next_face_t
     for axis in range(3):
         if line_uvec[axis] == 0:
             next_face_t[axis] = np.finfo(np.float64).max
         else:
-            next_face_t[axis] = _calc_next_face_t(
-                axis, cur_cell_index = cell_index
+            #print('old:')
+            #print(axis, _calc_next_face_t(axis, cur_cell_index = cell_index))
+            #print('new:')
+            next_face_t[axis] = _calc_next_face_alt_t(
+                axis, cur_cell_index = cell_index,
+                params = params
             )
 
-    # when an element is equal to the corresponding entry of 
-    # stop_index, exit the loop
-    stop_index = np.empty((3,),dtype=np.int64)
+    # Next, fill the stop_index array. When the corresponding elements of
+    # cell_index and stop_index are equal, we'll know that it's time to exit
+    # the while-loop.
+    cdef int[3] stop_index
     for axis in range(3):
         if line_uvec[axis] <= 0:
             stop_index[axis] = -1
         else:
             stop_index[axis] = grid_shape[axis]
 
+    cdef double cell_entry_t
+    cdef double cell_exit_t = initial_cell_entry
+    cdef int num_cells = 0
 
-    cell_exit_t = initial_cell_entry
-    num_cells = 0
-
-    while (stop_index != cell_index).all():
+    while ((stop_index[0] != cell_index[0]) and
+           (stop_index[1] != cell_index[1]) and
+           (stop_index[2] != cell_index[2])):
+        # store the t value corresponding to the ray's entrance into the
+        # current cell
         cell_entry_t = cell_exit_t
-        cell_exit_t = next_face_t.min()
+        # find the t value corresponding to ray's exit from the current cell
+        cell_exit_t = min(min(next_face_t[0], next_face_t[1]),
+                          next_face_t[2])
 
         # process current entry
-        indices[:, num_cells] = cell_index
+        for axis in range(3):
+            indices[axis, num_cells] = cell_index[axis]
         distances[num_cells] = cell_exit_t - cell_entry_t
         num_cells+=1
 
@@ -460,8 +506,9 @@ def traverse_grid(line_uvec, line_start,
                     cell_index[axis] -= 1
                 else:
                     raise RuntimeError()
-                next_face_t[axis] = _calc_next_face_t(
-                    axis, cur_cell_index = cell_index
+                next_face_t[axis] = _calc_next_face_alt_t(
+                    axis, cur_cell_index = cell_index,
+                    params = params
                 )
     for i in range(3):
         if not np.logical_and(indices[i, :num_cells] < grid_shape[i],
