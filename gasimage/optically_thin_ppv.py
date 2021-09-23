@@ -1,6 +1,8 @@
 import numpy as np
 import yt
 
+import schwimmbad
+
 import gc
 
 from ._ray_intersections_cy import ray_box_intersections, traverse_grid
@@ -154,6 +156,68 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                 rest_freq = rest_freq, dz = dz)
     return out
 
+class Worker:
+    def __init__(self, ds_initializer, obs_freq, length_unit_name,
+                 ray_start, generate_ray_spectrum_kwargs):
+        assert np.ndim(obs_freq) == 1
+
+        self.ds_initializer = ds_initializer
+        self.obs_freq = obs_freq
+        self.length_unit_name = length_unit_name
+        self.ray_start = ray_start
+
+        for key in ['obs_freq', 'grid', 'grid_left_edge', 'grid_right_edge',
+                    'cell_width', 'grid_shape', 'out', 'ray_start', 'ray_uvec']:
+            if key in generate_ray_spectrum_kwargs:
+                raise ValueError(f"'{key}' should not be a key of "
+                                 "generate_ray_spectrum_kwargs")
+        self.generate_ray_spectrum_kwargs = generate_ray_spectrum_kwargs
+
+
+    def __call__(self, elem):
+        grid_index, ray_stop_locs = elem
+        assert (ray_stop_locs.ndim == 2) and ray_stop_locs.shape[1] == 3
+
+        out = np.empty(shape = (ray_stop_locs.shape[0], self.obs_freq.size),
+                       dtype = np.float64)
+
+        # load the dataset
+        _ds_initializer = self.ds_initializer
+        if isinstance(_ds_initializer, yt.data_objects.static_output.Dataset):
+            ds = _ds_initializer
+        else:
+            ds = _ds_initializer()
+
+        # load properties about the current block of the dataset
+        grid = ds.index.grids[grid_index]
+        grid_shape = ds.index.grid_dimensions[grid_index]
+        left_edge \
+            = ds.index.grid_left_edge[grid_index].to(self.length_unit_name).v
+        right_edge \
+            = ds.index.grid_right_edge[grid_index].to(self.length_unit_name).v
+        cell_width = ((right_edge - left_edge)/np.array(grid.shape))
+
+        # now actually process the rays
+        for i in range(ray_stop_locs.shape[0]):
+            cur_ray_stop = ray_stop_locs[i,:]
+
+            ray_vec = cur_ray_stop - self.ray_start
+            ray_uvec = (ray_vec/np.sqrt((ray_vec*ray_vec).sum()))
+
+            # generate the spectrum
+            generate_ray_spectrum(
+                grid, grid_left_edge = left_edge, grid_right_edge = right_edge,
+                cell_width = cell_width, grid_shape = grid_shape,
+                ray_start = self.ray_start, ray_uvec = ray_uvec,
+                obs_freq = self.obs_freq, out = out[i,:],
+                **self.generate_ray_spectrum_kwargs
+            )
+        grid.clear_data()
+        del grid
+        gc.collect()
+
+        return grid_index, out
+
 
 def _top_level_grid_indices(ds):
     """
@@ -178,10 +242,9 @@ def _top_level_grid_indices(ds):
         ((ds.index.grid_left_edge - ds.domain_left_edge) /
          root_block_width).in_cgs().v
     )
-    
+
     block_loc_array[tuple(block_array_indices.T)] = np.arange(n_blocks)
     return block_loc_array
-
 
 class RayGridAssignments:
     # Helper class that keeps track of which root-grids that each ray
@@ -235,7 +298,8 @@ class RayGridAssignments:
 def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
                        ndens_HI_field = ('gas', 'H_p0_number_density'),
                        doppler_v_width = None,
-                       use_cython_gen_spec = False):
+                       use_cython_gen_spec = False,
+                       pool = None):
     """
     Generate a mock ppv image of a simulation using a ray-casting radiative
     transfer algorithm that assumes that the gas is optically thin.
@@ -280,82 +344,99 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
           compute the opacity at the nominal velocity of the velocity. In
           reality, I think velocity channels are probably more like bins
     """
-    if np.logical_and(ray_start >= ds.domain_left_edge,
-                      ray_start <= ds.domain_right_edge).all():
-        raise RuntimeError()
+            
+
+    if pool is None:
+        pool = schwimmbad.SerialPool()
+
+    is_root = (not hasattr(pool,'is_master')) or pool.is_master()
+
+    if is_root:
+        # now get an instance of the dataset
+        if isinstance(ds, yt.data_objects.static_output.Dataset):
+            if not isinstance(pool, schwimmbad.SerialPool):
+                raise ValueError("When ds is a dataset object, pool must be "
+                                 "assigned a schwimmbad.SerialPool instance.")
+            else:
+                my_ds = ds
+        else:
+            my_ds = ds()
+
+        if np.logical_and(ray_start >= my_ds.domain_left_edge,
+                          ray_start <= my_ds.domain_right_edge).all():
+            raise RuntimeError()
     
-    # use the code units (since the cell widths are usually better behaved)
-    length_unit_name = 'code_length'
-    length_unit_quan = ds.quan(1.0, 'code_length')
+        # use the code units (since the cell widths are usually better behaved)
+        length_unit_name = 'code_length'
+        length_unit_quan = my_ds.quan(1.0, 'code_length')
 
-    ray_start = ray_start.to('cm').v /length_unit_quan.to('cm').v
-    ray_stop = ray_stop.to('cm').v / length_unit_quan.to('cm').v
-    assert ray_start.shape == (3,)
+        ray_start = ray_start.to('cm').v /length_unit_quan.to('cm').v
+        ray_stop = ray_stop.to('cm').v / length_unit_quan.to('cm').v
+        assert ray_start.shape == (3,)
 
-    assert ray_stop.shape[-1] == 3
-    ray_stop_2D = ray_stop.view()
-    ray_stop_2D.shape = (-1,3)
-    assert ray_stop_2D.flags['C_CONTIGUOUS']
+        # create the iterator
+        assert ray_stop.shape[-1] == 3
+        ray_stop_2D = ray_stop.view()
+        ray_stop_2D.shape = (-1,3)
+        assert ray_stop_2D.flags['C_CONTIGUOUS']
 
-    # create the output array
-    out_shape = (v_channels.size,) + ray_stop.shape[:-1]
-    out = np.zeros(shape = out_shape)
+        print('Constructing RayGridAssignments')
+        subgrid_ray_map = RayGridAssignments(my_ds, ray_start,
+                                             ray_stop_l = ray_stop_2D,
+                                             units = length_unit_name)
+        def generator():
+            for grid_ind in range(my_ds.index.grids.size):
+                ray_idx =subgrid_ray_map.rays_associated_with_subgrid(grid_ind)
+                if len(ray_idx) == 0:
+                    continue
+                else:
+                    print('grid_index = ', grid_ind, ' num_rays = ',
+                          len(ray_idx))
 
-    # flatten the out array down to 2-dimensions:
-    out_2D = out.view()
-    out_2D.shape = (v_channels.size, -1)
+                ray_stop_loc = np.copy(ray_stop_2D[ray_idx,:])
+                yield grid_ind, ray_stop_loc
 
-    rest_freq = 1.4204058E+09*yt.units.Hz
-    obs_freq = (rest_freq*(1+v_channels/yt.units.c_cgs)).to('Hz')
 
-    print('Constructing RayGridAssignments')
-    subgrid_ray_map = RayGridAssignments(ds, ray_start,
-                                         ray_stop_l = ray_stop_2D,
-                                         units = length_unit_name)
+        # create the worker
+        rest_freq = 1.4204058E+09*yt.units.Hz,
+        worker = Worker(
+            ds_initializer = ds,
+            obs_freq = (rest_freq*(1+v_channels/yt.units.c_cgs)).to('Hz'),
+            length_unit_name = length_unit_name,
+            ray_start = ray_start,
+            generate_ray_spectrum_kwargs = {
+                'rest_freq' : rest_freq,
+                'cm_per_length_unit' : length_unit_quan.to('cm').v,
+                'doppler_v_width' : doppler_v_width,
+                'ndens_HI_field' : ndens_HI_field,
+                'use_cython_gen_spec' : use_cython_gen_spec,
+            }
+        )
+        
 
-    # this is a contiguous array where the spectrum for a single
-    # ray gets stored
-    _temp_buffer = np.empty(shape = (v_channels.size,),
-                            dtype = np.float64)
-    print('Beginning iteration')
-    for grid_ind in range(ds.index.grids.size):
-        ray_idx = subgrid_ray_map.rays_associated_with_subgrid(grid_ind)
-        if len(ray_idx) == 0:
-            continue
+        # create the output array and callback function
+        out_shape = (v_channels.size,) + ray_stop.shape[:-1]
+        out = np.zeros(shape = out_shape)
 
-        # pass grid_ind and ray_stop_2D[ray_idx]
+        # flatten the out array down to 2-dimensions:
+        out_2D = out.view()
+        out_2D.shape = (v_channels.size, -1)
 
-        grid = ds.index.grids[grid_ind]
-        grid_shape = ds.index.grid_dimensions[grid_ind]
-        left_edge = ds.index.grid_left_edge[grid_ind].to(length_unit_name).v
-        right_edge = ds.index.grid_right_edge[grid_ind].to(length_unit_name).v
-        cell_width = ((right_edge - left_edge)/np.array(grid.shape))
+        def callback(rslt):
+            grid_index, ray_spectra = rslt
+            ray_idx = subgrid_ray_map.rays_associated_with_subgrid(grid_index)
+            for i,ray_ind in enumerate(ray_idx):
+                out_2D[:,ray_ind] += ray_spectra[i,:]
+    else:
+        generator = None
+        worker = None
+        callback = None
+        out = None
 
-        if len(ray_idx) > 0:
-            print(grid, ' num_rays = ', len(ray_idx))
-
-        for ray_ind in ray_idx:
-            cur_ray_stop = ray_stop_2D[ray_ind]
-
-            ray_vec = cur_ray_stop - ray_start
-            ray_uvec = (ray_vec/np.sqrt((ray_vec*ray_vec).sum()))
-
-            # generate the spectrum
-            generate_ray_spectrum(
-                grid, grid_left_edge = left_edge, grid_right_edge = right_edge,
-                cell_width = cell_width, grid_shape = grid_shape,
-                ray_start =ray_start, ray_uvec = ray_uvec,
-                cm_per_length_unit = length_unit_quan.to('cm').v,
-                rest_freq = rest_freq, obs_freq = obs_freq,
-                doppler_v_width = doppler_v_width,
-                ndens_HI_field = ndens_HI_field,
-                use_cython_gen_spec = use_cython_gen_spec, out = _temp_buffer
-            )
-            out_2D[:,ray_ind] += _temp_buffer
-
-        grid.clear_data()
-        del grid
-        gc.collect()
+    print('begin processing')
+    for elem in pool.map(worker, generator(), callback = callback):
+        continue
+    print('finished processing')
 
     # need to think more about the about output units (specifically,
     # think about dependence on solid angle)
@@ -365,6 +446,7 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
         return yt.YTArray(out_2D[:,0], out_units)
     else:
         return yt.YTArray(out, out_units)
+    
 
 def convert_intensity_to_Tb(ppv, rest_freq = 1.4204058E+09*yt.units.Hz,
                             v_channels = None):
