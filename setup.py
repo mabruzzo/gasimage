@@ -17,7 +17,9 @@ class build_ext(_build_ext):
 
 ext_modules = [
     Extension('gasimage._ray_intersections_cy',
-              ['gasimage/_ray_intersections_cy.pyx'])
+              ['gasimage/_ray_intersections_cy.pyx']),
+    Extension('gasimage._generate_spec_cy',
+              ['gasimage/_generate_spec_cy.pyx']),
 ]
 
 # on some platforms, we need to apply the language level directive before setup

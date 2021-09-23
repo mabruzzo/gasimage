@@ -3,7 +3,8 @@ import yt
 
 import gc
 
-from .ray_intersections import ray_box_intersections, traverse_grid
+from ._ray_intersections_cy import ray_box_intersections, traverse_grid
+from ._generate_spec_cy import _generate_ray_spectrum_cy
 
 _inv_sqrt_pi = 1.0/np.sqrt(np.pi)
 
@@ -36,8 +37,9 @@ def line_profile(obs_freq, doppler_v_width, rest_freq,
 
     return norm*np.exp(exponent.to('dimensionless').v)
 
-def _generate_spectrum(obs_freq, velocities, ndens_HI,
-                       doppler_v_width, rest_freq, dz):
+def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI,
+                              doppler_v_width, rest_freq, dz,
+                              out = None):
     _A10 = 2.85e-15*yt.units.Hz
     n1 = 0.75*ndens_HI # need spin temperature to be more exact
     profiles = line_profile(obs_freq = obs_freq,
@@ -50,7 +52,11 @@ def _generate_spectrum(obs_freq, velocities, ndens_HI,
     if True:
         # need to think more about the units
         # there may be an implicit dependence on the solid angle
-        return integrated.to('erg/cm**2').v
+        if out is not None:
+            out[:] = integrated.to('erg/cm**2').v
+            return out
+        else:
+            return integrated.to('erg/cm**2').v
     if False:
         n0 = 0.25*ndens_HI
         g1_div_g0 = 3
@@ -59,6 +65,7 @@ def _generate_spectrum(obs_freq, velocities, ndens_HI,
         stim_correct = 1.0-np.exp(-0.0682/Tspin.to('K').v)
         alpha_nu = n0*g1_div_g0*_A10*rest_wave**2 * stim_correct * profiles/(8*np.pi)
         optical_depth = (alpha_nu*dz).sum(axis=1)
+        assert out is None
         return integrated,optical_depth
 
 def _calc_doppler_v_width(grid,idx):
@@ -66,36 +73,33 @@ def _calc_doppler_v_width(grid,idx):
                   (grid['mean_molecular_weight'][idx]*yt.units.mh))
 
 def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
-                          cell_width, grid_shape, length_unit,
+                          cell_width, grid_shape, cm_per_length_unit,
                           ray_start, ray_uvec,
                           rest_freq, obs_freq, doppler_v_width = None,
                           ndens_HI_field = ('gas', 'H_p0_number_density'),
+                          use_cython_gen_spec = False,
                           out = None):
+
     if out is not None:
         assert out.shape == obs_freq.shape
     else:
-        out = np.empty_like(rest_freq)
-    
+        out = np.empty_like(obs_freq)
+    assert str(obs_freq.units) == 'Hz'
+
     vx_field,vy_field,vz_field = (
         ('gas','velocity_x'), ('gas','velocity_y'), ('gas','velocity_z')
     )
 
-    #print(grid_left_edge, grid_right_edge, ray_start, ray_uvec)
-    intersect_dist = ray_box_intersections(
-        line_start = ray_start, line_uvec = ray_uvec, 
-        left_edge = grid_left_edge, 
-        right_edge = grid_right_edge)
-    #print(intersect_dist)
-    if len(intersect_dist) < 2:
-        out[:] = 0.0
-    else:
+
+    if True:
         try:
             tmp_idx, dz = traverse_grid(
                 line_uvec = ray_uvec,
                 line_start = ray_start,
                 grid_left_edge = grid_left_edge,
                 cell_width = cell_width,
-                grid_shape = grid_shape)
+                grid_shape = grid_shape
+            )
         except:
             print('There was a problem!')
             pairs = [('line_uvec', ray_uvec),
@@ -106,44 +110,161 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                 arr_str = np.array2string(arr, floatmode = 'unique')
                 print(f'{name} = {arr_str}')
             print(f'grid_shape = {np.array2string(np.array(grid_shape))}')
-
             raise
-            #out[:] = np.nan
-            #return out
 
         idx = (tmp_idx[0], tmp_idx[1], tmp_idx[2])
-        #print(idx)
 
         # convert dz to cm to avoid problems later
-        dz = dz * length_unit.to('cm')
+        dz *= cm_per_length_unit
+        dz = yt.YTArray(dz, 'cm')
 
         # compute the velocity component. We should probably confirm
         # correctness of the velocity sign
         vlos = (ray_uvec[0] * grid[vx_field][idx] +
                 ray_uvec[1] * grid[vy_field][idx] +
-                ray_uvec[2] * grid[vz_field][idx])
+                ray_uvec[2] * grid[vz_field][idx]).to('cm/s')
 
         if doppler_v_width is None:
-            # it would probably be more sensible to make doppler_v_width
-            # into a field
-            cur_doppler_v_width = _calc_doppler_v_width(grid,idx)
+            # it might be more sensible to make doppler_v_width into a field
+            cur_doppler_v_width = _calc_doppler_v_width(grid,idx).to('cm/s')
         else:
-            cur_doppler_v_width = doppler_v_width
+            cur_doppler_v_width = doppler_v_width.to('cm/s')
 
-        # we should come back to this and handle it properly in the future
-        out[:] = _generate_spectrum(obs_freq = obs_freq,
-                                    velocities = vlos, 
-                                    ndens_HI = grid[ndens_HI_field][idx],
-                                    doppler_v_width = cur_doppler_v_width, 
-                                    rest_freq = rest_freq, 
-                                    dz = dz)
+        ndens_HI = grid[ndens_HI_field][idx].to('cm**-3')
+
+        if use_cython_gen_spec:
+            # There were bugs in this version of the method
+            raise RuntimeError(
+                "The cythonized version has not been properly tested (it may "
+                "not return correct results)"
+            )
+            _generate_ray_spectrum_cy(
+                obs_freq = obs_freq.ndarray_view(),
+                velocities = vlos.ndarray_view(),
+                ndens_HI = ndens_HI.ndarray_view(),
+                doppler_v_width = cur_doppler_v_width.ndarray_view(), 
+                rest_freq = float(rest_freq.v),
+                dz = dz.ndarray_view(),
+                out = out)
+        else:
+            out[:] = _generate_ray_spectrum_py(
+                obs_freq = obs_freq, velocities = vlos, 
+                ndens_HI = grid[ndens_HI_field][idx],
+                doppler_v_width = cur_doppler_v_width, 
+                rest_freq = rest_freq, dz = dz)
     return out
+
+
+def _top_level_grid_indices(ds):
+    """
+    Creates a 3D array holding the indices of the top level blocks
+
+    Note: we use the term block and grid interchangably
+    """
+    assert ds.index.max_level == 0
+    n_blocks = len(ds.index.grids)
+
+    # there's probably a better way to do the following:
+    root_block_width = (ds.index.grid_right_edge - ds.index.grid_left_edge)[0]
+    to_nearest_int = lambda arr: np.trunc(arr+0.5).astype(np.int32)
+
+    blocks_per_axis = to_nearest_int(
+        (ds.domain_width / root_block_width).in_cgs().v
+    )
+    block_loc_array = np.empty(shape=blocks_per_axis, dtype = np.int32)
+    assert block_loc_array.size == n_blocks
+
+    block_array_indices = to_nearest_int(
+        ((ds.index.grid_left_edge - ds.domain_left_edge) /
+         root_block_width).in_cgs().v
+    )
+    
+    block_loc_array[tuple(block_array_indices.T)] = np.arange(n_blocks)
+    return block_loc_array
+
+
+class RayGridAssignments:
+    # Helper class that keeps track of which root-grids that each ray
+    # intersects with.
+    def __init__(self, ds, ray_start, ray_stop_l, units):
+        subgrid_array = _top_level_grid_indices(ds)
+        domain_left_edge = ds.domain_left_edge.to(units).v
+        domain_right_edge = ds.domain_right_edge.to(units).v
+        cell_width = ((domain_right_edge - domain_left_edge)/
+                      np.array(subgrid_array.shape))
+        subgrid_array_shape = subgrid_array.shape
+
+        self._sequence_table = {}
+
+        self._subgrids_with_rays = set()
+        
+        for i, cur_ray_stop in enumerate(ray_stop_l):
+            ray_vec = cur_ray_stop - ray_start
+            ray_uvec = (ray_vec/np.sqrt((ray_vec*ray_vec).sum()))
+
+            intersect_dist = ray_box_intersections(
+                line_start = ray_start, line_uvec = ray_uvec, 
+                left_edge = domain_left_edge, right_edge = domain_right_edge)
+            if len(intersect_dist) < 2:
+                continue
+            idx,_ = traverse_grid(line_uvec = ray_uvec,
+                                  line_start = ray_start,
+                                  grid_left_edge = domain_left_edge,
+                                  cell_width = cell_width,
+                                  grid_shape = subgrid_array_shape)
+            subgrid_sequence = tuple(subgrid_array[idx[0],idx[1],idx[2]])
+
+            self._subgrids_with_rays.update(subgrid_sequence)
+
+            if subgrid_sequence in self._sequence_table:
+                self._sequence_table[subgrid_sequence].append(i)
+            else:
+                self._sequence_table[subgrid_sequence] = [i]
+        print(len(self._sequence_table))
+        
+    def rays_associated_with_subgrid(self, subgrid_id):
+        out = []
+        if subgrid_id not in self._subgrids_with_rays:
+            return out
+        for subgrid_sequence, ray_ids in self._sequence_table.items():
+            if subgrid_id in subgrid_sequence:
+                out = out + ray_ids
+        return out
+
 
 def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
                        ndens_HI_field = ('gas', 'H_p0_number_density'),
-                       doppler_v_width = None):
+                       doppler_v_width = None,
+                       use_cython_gen_spec = False):
     """
+    Generate a mock ppv image of a simulation using a ray-casting radiative
+    transfer algorithm that assumes that the gas is optically thin.
 
+    Parameters
+    ----------
+    v_channels: 1D `unyt.unyt_array`
+        A monotonically increasing array of velocity channels.
+    ray_start: 1D `unyt.unyt_array`
+        A (3,) array that specifies the observer's location (with respect to
+        the dataset's coordinate system). Currently, this must be located 
+        outside of the simulation domain.
+    ray_stop: 3D `unyt.unyt_array`
+        A (m,n,3) array specifying the location where each ray stops.
+    ds: `yt.data_objects.static_output.Dataset` or `SnapDatasetInitializer`
+        The dataset or an object that initializes the dataset from which the
+        image is constructed. If ds is the dataset, itself, this function
+        cannot be parallelized (due to issues with pickling). Currently, the 
+        dataset must be unigrid.
+    ndens_HI_field
+        The name of the field holding the number density of H I atoms
+    doppler_v_width: unyt.quantity, Optional
+        Optional parameter that can be used specify the doppler width at every 
+        cell in the resulting image. When not specified, this is computed from
+        the local line of sight velocity.
+    use_cython_gen_spec: bool, optional
+        Generate the spectrum using the cython implementation. This is
+        currently experimental (and should not be used until the results are 
+        confirmed to be consistent with the python implementation).
 
     Notes
     -----
@@ -151,8 +272,13 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
     - neglect the transverse redshift
     - approximate the longitudinal redshift as freq_obs = rest_freq*(1+vel/c)
 
-    In the future, it would be nice to be able to specify a bulk velocity for 
-    the gas.
+    TODO: In the future, it would be nice to be able to specify a bulk velocity
+          for the gas.
+    TODO: In the future, we might want to consider adding support for using a 
+          Voigt line profile
+    TODO: Revisit treatment of velocity channels. I think we currently just
+          compute the opacity at the nominal velocity of the velocity. In
+          reality, I think velocity channels are probably more like bins
     """
     if np.logical_and(ray_start >= ds.domain_left_edge,
                       ray_start <= ds.domain_right_edge).all():
@@ -182,37 +308,51 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
     rest_freq = 1.4204058E+09*yt.units.Hz
     obs_freq = (rest_freq*(1+v_channels/yt.units.c_cgs)).to('Hz')
 
+    print('Constructing RayGridAssignments')
+    subgrid_ray_map = RayGridAssignments(ds, ray_start,
+                                         ray_stop_l = ray_stop_2D,
+                                         units = length_unit_name)
+
     # this is a contiguous array where the spectrum for a single
     # ray gets stored
     _temp_buffer = np.empty(shape = (v_channels.size,),
                             dtype = np.float64)
+    print('Beginning iteration')
     for grid_ind in range(ds.index.grids.size):
+        ray_idx = subgrid_ray_map.rays_associated_with_subgrid(grid_ind)
+        if len(ray_idx) == 0:
+            continue
+
+        # pass grid_ind and ray_stop_2D[ray_idx]
+
         grid = ds.index.grids[grid_ind]
-        print(grid, grid_ind)
         grid_shape = ds.index.grid_dimensions[grid_ind]
         left_edge = ds.index.grid_left_edge[grid_ind].to(length_unit_name).v
         right_edge = ds.index.grid_right_edge[grid_ind].to(length_unit_name).v
         cell_width = ((right_edge - left_edge)/np.array(grid.shape))
 
-        for i, cur_ray_stop in enumerate(ray_stop_2D):
+        if len(ray_idx) > 0:
+            print(grid, ' num_rays = ', len(ray_idx))
+
+        for ray_ind in ray_idx:
+            cur_ray_stop = ray_stop_2D[ray_ind]
 
             ray_vec = cur_ray_stop - ray_start
             ray_uvec = (ray_vec/np.sqrt((ray_vec*ray_vec).sum()))
 
             # generate the spectrum
-            generate_ray_spectrum(grid, grid_left_edge = left_edge,
-                                  grid_right_edge = right_edge,
-                                  cell_width = cell_width, 
-                                  grid_shape = grid_shape,
-                                  ray_start =ray_start, ray_uvec = ray_uvec,
-                                  length_unit = length_unit_quan,
-                                  rest_freq = rest_freq,
-                                  obs_freq = obs_freq,
-                                  doppler_v_width = doppler_v_width,
-                                  ndens_HI_field = ndens_HI_field,
-                                  out = _temp_buffer)
-            out_2D[:,i] += _temp_buffer
-        
+            generate_ray_spectrum(
+                grid, grid_left_edge = left_edge, grid_right_edge = right_edge,
+                cell_width = cell_width, grid_shape = grid_shape,
+                ray_start =ray_start, ray_uvec = ray_uvec,
+                cm_per_length_unit = length_unit_quan.to('cm').v,
+                rest_freq = rest_freq, obs_freq = obs_freq,
+                doppler_v_width = doppler_v_width,
+                ndens_HI_field = ndens_HI_field,
+                use_cython_gen_spec = use_cython_gen_spec, out = _temp_buffer
+            )
+            out_2D[:,ray_ind] += _temp_buffer
+
         grid.clear_data()
         del grid
         gc.collect()

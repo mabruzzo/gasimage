@@ -1,0 +1,17 @@
+This module nominally constructs HI images of gas clouds by under the assumption
+that the gas is optically thin
+
+
+Some of this was hastily thrown together. Before publishing a paper
+using this code, there are few items that should be reviewed:
+
+- check the units on the radiative transfer.
+
+- write tests to verify the correctness of the ray intersection code
+
+- Write additional tests verifying the correctness of the ray-rotation code:
+
+    - I'm fairly confident that this works. (Although I'm not completely
+      convinced that the plots of the rays are completely correct). some of the plots of the
+I'm confident that this largely works, but I haven't tested things varying the reference ray's latitude (in the frame of the observer); so far I have just used sky_latitude = 0.0). 
+

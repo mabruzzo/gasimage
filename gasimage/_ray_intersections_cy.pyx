@@ -312,15 +312,15 @@ def _starting_index(const double[:] line_uvec, const double[:] line_start,
     return cell_index_arr, t_start
 
 
+# the following can all be dramatically optimized
 cdef struct CalcNextFaceTParams:
-    double[3] line_uvec
-    double[3] grid_left_edge
-    double[3] line_start
-    double[3] cell_width
+    double line_uvec
+    double grid_left_edge
+    double line_start
+    double cell_width
 
-cdef _calc_next_face_alt_t(Py_ssize_t axis,
-                          int[:] cur_cell_index,
-                           CalcNextFaceTParams params):
+cdef inline double _calc_next_face_t(int cur_cell_index,
+                                     CalcNextFaceTParams params) nogil:
     # compute the distance to the next face from the 
     # start of the line
 
@@ -328,26 +328,20 @@ cdef _calc_next_face_alt_t(Py_ssize_t axis,
     # note: face-index 0 corresponds to the left face of the
     # cell with index = 0
 
-    #print(params.line_uvec[0], params.line_uvec[1], params.line_uvec[2])
-    #print(params.grid_left_edge[0], params.grid_left_edge[1],
-    #      params.grid_left_edge[2])
-    #print(params.line_start[0], params.line_start[1], params.line_start[2])
-    #print(params.cell_width[0], params.cell_width[1], params.cell_width[2])
-
     cdef int next_face_ind
-    if params.line_uvec[axis] > 0:
-        next_face_ind = cur_cell_index[axis] + 1
-    elif params.line_uvec[axis] < 0:
-        next_face_ind = cur_cell_index[axis]
+    if params.line_uvec > 0:
+        next_face_ind = cur_cell_index + 1
+    elif params.line_uvec < 0:
+        next_face_ind = cur_cell_index
     else:
         raise RuntimeError()
 
     cdef double next_face_pos = (
-        params.grid_left_edge[axis] + next_face_ind * params.cell_width[axis]
+        params.grid_left_edge + next_face_ind * params.cell_width
     )
 
     cdef double out = (
-        (next_face_pos - params.line_start[axis]) / params.line_uvec[axis]
+        (next_face_pos - params.line_start) / params.line_uvec
     )
     if out < 0:
         raise AssertionError()
@@ -404,53 +398,31 @@ def traverse_grid(line_uvec, line_start,
     # max number of intersectable cells by a diagonal line)
     max_num = np.sum(grid_shape)
 
-    indices = np.empty((3,max_num), np.int64)
-    distances = np.empty((max_num,), np.float64)
+    # I'm using np.compat.long to be explicit that I want the "long" data type
+    indices_arr = np.empty((3,max_num), np.compat.long, order = 'C')
+    # tell the memory view that indices is C-contiguous
+    cdef long[:, ::1] indices = indices_arr
 
-    def _calc_next_face_t(axis, cur_cell_index):
-        # compute the distance to the next face from the 
-        # start of the line
+    distances_arr = np.empty((max_num,), np.float64)
+    cdef double[:] distances = distances_arr
 
-        # first, compute determine the index of the next face
-        # note: face-index 0 corresponds to the left face of the
-        # cell with index = 0
+    # compute the index of the very first cell that the ray intersects
+    cell_index_arr, initial_cell_entry = _starting_index(
+        line_uvec, line_start, grid_left_edge, cell_width, 
+        np.array(grid_shape, dtype = np.float64)
+    )
+    cdef int[:] cell_index = cell_index_arr
 
-        print(line_uvec[0], line_uvec[1], line_uvec[2])
-        print(grid_left_edge[0], grid_left_edge[1],
-              grid_left_edge[2])
-        print(line_start[0], line_start[1], line_start[2])
-        print(cell_width[0], cell_width[1], cell_width[2])
-
-        if line_uvec[axis] > 0:
-            next_face_ind = cur_cell_index[axis] + 1
-        elif line_uvec[axis] < 0:
-            next_face_ind = cur_cell_index[axis]
-        else:
-            raise RuntimeError()
-
-        next_face_pos = (
-            grid_left_edge[axis] + next_face_ind * cell_width[axis]
-        )
-
-        out = (next_face_pos - line_start[axis]) / line_uvec[axis]
-        if out < 0:
-            raise AssertionError()
-        return out
     cdef Py_ssize_t axis
 
-    cdef CalcNextFaceTParams params
+    # Prepare the structs that are used to find the t value at which the ray
+    # will cross the next cell-face (along a given axis)
+    cdef CalcNextFaceTParams[3] calc_face_t_params
     for axis in range(3):
-        params.line_uvec[axis] = line_uvec[axis]
-        params.line_start[axis] = line_start[axis]
-        params.grid_left_edge[axis] = grid_left_edge[axis]
-        params.cell_width[axis] = cell_width[axis]
-
-    # compute the index or the first cell that the ray
-    # intersects
-    cell_index, initial_cell_entry = _starting_index(
-        line_uvec, line_start, grid_left_edge, cell_width, 
-         np.array(grid_shape, dtype = np.float64)
-    )
+        calc_face_t_params[axis].line_uvec = line_uvec[axis]
+        calc_face_t_params[axis].line_start = line_start[axis]
+        calc_face_t_params[axis].grid_left_edge = grid_left_edge[axis]
+        calc_face_t_params[axis].cell_width = cell_width[axis]
 
     # now actually actually compute the t values corresponding to the locations
     # where the ray will cross the next cell face along each axis
@@ -459,12 +431,9 @@ def traverse_grid(line_uvec, line_start,
         if line_uvec[axis] == 0:
             next_face_t[axis] = np.finfo(np.float64).max
         else:
-            #print('old:')
-            #print(axis, _calc_next_face_t(axis, cur_cell_index = cell_index))
-            #print('new:')
-            next_face_t[axis] = _calc_next_face_alt_t(
-                axis, cur_cell_index = cell_index,
-                params = params
+            next_face_t[axis] = _calc_next_face_t(
+                cur_cell_index = cell_index[axis],
+                params = calc_face_t_params[axis]
             )
 
     # Next, fill the stop_index array. When the corresponding elements of
@@ -506,20 +475,20 @@ def traverse_grid(line_uvec, line_start,
                     cell_index[axis] -= 1
                 else:
                     raise RuntimeError()
-                next_face_t[axis] = _calc_next_face_alt_t(
-                    axis, cur_cell_index = cell_index,
-                    params = params
+                next_face_t[axis] = _calc_next_face_t(
+                    cur_cell_index = cell_index[axis],
+                    params = calc_face_t_params[axis]
                 )
     for i in range(3):
-        if not np.logical_and(indices[i, :num_cells] < grid_shape[i],
-                              indices[i, :num_cells] >= 0).all():
+        if not np.logical_and(indices_arr[i, :num_cells] < grid_shape[i],
+                              indices_arr[i, :num_cells] >= 0).all():
             print('Problem dimension: i')
             print(indices[:, :num_cells])
             print(distances[:num_cells])
             raise AssertionError()
-    if not (distances[:num_cells] >= 0).all():
+    if not (distances_arr[:num_cells] >= 0).all():
         print(indices[:, :num_cells])
         print(distances[:num_cells])
         raise AssertionError()
 
-    return indices[:, :num_cells],distances[:num_cells]
+    return indices_arr[:, :num_cells],distances_arr[:num_cells]
