@@ -19,7 +19,7 @@ def line_profile(obs_freq, doppler_v_width, rest_freq,
 
     # temp is equivalent to 1./(sqrt(2) * sigma)
     temp = (
-        yt.units.c_cgs/(rest_freq*doppler_v_width)
+        unyt.c_cgs/(rest_freq*doppler_v_width)
     )
 
     norm = _inv_sqrt_pi * temp
@@ -30,7 +30,7 @@ def line_profile(obs_freq, doppler_v_width, rest_freq,
         emit_freq = obs_freq[:,np.newaxis]
     else:
         assert velocity_offset.shape == doppler_v_width.shape
-        v_div_c_plus_1 = 1 + velocity_offset/yt.units.c_cgs
+        v_div_c_plus_1 = 1 + velocity_offset/unyt.c_cgs
         emit_freq = obs_freq[:,np.newaxis]/(v_div_c_plus_1.to('dimensionless').v)
 
     delta_nu = (emit_freq - rest_freq)
@@ -42,13 +42,13 @@ def line_profile(obs_freq, doppler_v_width, rest_freq,
 def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI,
                               doppler_v_width, rest_freq, dz,
                               out = None):
-    _A10 = 2.85e-15*yt.units.Hz
+    _A10 = 2.85e-15*unyt.Hz
     n1 = 0.75*ndens_HI # need spin temperature to be more exact
     profiles = line_profile(obs_freq = obs_freq,
                             doppler_v_width = doppler_v_width,
                             rest_freq = rest_freq,
                             velocity_offset = velocities)
-    j_nu = yt.units.h_cgs * rest_freq *n1* _A10 * profiles/(4*np.pi)
+    j_nu = unyt.h_cgs * rest_freq *n1* _A10 * profiles/(4*np.pi)
     integrated = (j_nu*dz).sum(axis=1)
 
     if True:
@@ -62,8 +62,8 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI,
     if False:
         n0 = 0.25*ndens_HI
         g1_div_g0 = 3
-        rest_wave = yt.units.c_cgs/rest_freq
-        Tspin = 100.0*yt.units.K
+        rest_wave = unyt.c_cgs/rest_freq
+        Tspin = 100.0*unyt.K
         stim_correct = 1.0-np.exp(-0.0682/Tspin.to('K').v)
         alpha_nu = n0*g1_div_g0*_A10*rest_wave**2 * stim_correct * profiles/(8*np.pi)
         optical_depth = (alpha_nu*dz).sum(axis=1)
@@ -71,8 +71,8 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI,
         return integrated,optical_depth
 
 def _calc_doppler_v_width(grid,idx):
-    return np.sqrt(2*yt.units.kb * grid['temperature'][idx]/
-                  (grid['mean_molecular_weight'][idx]*yt.units.mh))
+    return np.sqrt(2*unyt.kb_cgs * grid['temperature'][idx]/
+                  (grid['mean_molecular_weight'][idx]*unyt.mh_cgs))
 
 def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                           cell_width, grid_shape, cm_per_length_unit,
@@ -334,10 +334,10 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
         dataset must be unigrid.
     ndens_HI_field
         The name of the field holding the number density of H I atoms
-    doppler_v_width: unyt.quantity, Optional
-        Optional parameter that can be used specify the doppler width at every 
-        cell in the resulting image. When not specified, this is computed from
-        the local line of sight velocity.
+    doppler_v_width: `unyt.unyt_quantity`, Optional
+        Optional parameter that can be used to specify the doppler width at
+        every cell in the resulting image. When not specified, this is computed
+        from the local line of sight velocity.
     use_cython_gen_spec: bool, optional
         Generate the spectrum using the cython implementation. This is
         currently experimental (and should not be used until the results are 
@@ -361,7 +361,7 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
     TODO: In the future, we might want to consider adding support for using a 
           Voigt line profile
     TODO: Revisit treatment of velocity channels. I think we currently just
-          compute the opacity at the nominal velocity of the velocity. In
+          compute the opacity at the nominal velocity of the channel. In
           reality, I think velocity channels are probably more like bins
     """
     if rescale_length_factor is not None:
@@ -426,10 +426,10 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
 
 
         # create the worker
-        rest_freq = 1.4204058E+09*yt.units.Hz,
+        rest_freq = 1.4204058E+09*unyt.Hz,
         worker = Worker(
             ds_initializer = ds,
-            obs_freq = (rest_freq*(1+v_channels/yt.units.c_cgs)).to('Hz'),
+            obs_freq = (rest_freq*(1+v_channels/unyt.c_cgs)).to('Hz'),
             length_unit_name = length_unit_name,
             ray_start = ray_start,
             rescale_length_factor = rescale_length_factor,
@@ -477,11 +477,11 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
         return yt.YTArray(out, out_units)
     
 
-def convert_intensity_to_Tb(ppv, rest_freq = 1.4204058E+09*yt.units.Hz,
+def convert_intensity_to_Tb(ppv, rest_freq = 1.4204058E+09*unyt.Hz,
                             v_channels = None):
     if v_channels is not None:
         # assume that velocity << c
-        obs_freq = (rest_freq*(1+v_channels/yt.units.c_cgs)).to('Hz')
+        obs_freq = (rest_freq*(1+v_channels/unyt.c_cgs)).to('Hz')
         freq = obs_freq
         assert v_channels.shape == ppv.shape[:1]
         new_shape = [1 for elem in ppv.shape]
@@ -491,5 +491,4 @@ def convert_intensity_to_Tb(ppv, rest_freq = 1.4204058E+09*yt.units.Hz,
     else:
         freq = rest_freq
 
-    return (0.5*(yt.units.c_cgs/freq)**2 * 
-            ppv/yt.units.kboltz_cgs).to('K')
+    return (0.5*(unyt.c_cgs/freq)**2 * ppv/unyt.kboltz_cgs).to('K')

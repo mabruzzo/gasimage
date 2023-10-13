@@ -1,5 +1,5 @@
 import numpy as np
-import yt
+import unyt
 
 def _dot(matrix,vector):
     # to do, replace this with an actual numpy function
@@ -249,7 +249,7 @@ def transform_ray_end_points(ds, ray_end_points,
 
 
     converted_ray_origin = _convert_from_observer_coord(
-        np.array([0.0,0.0,0.0])*yt.units.cm
+        np.array([0.0,0.0,0.0])*unyt.cm
     )[0]
     flattened_end_points = ray_end_points.view()
     if ray_end_points.shape != (3,):

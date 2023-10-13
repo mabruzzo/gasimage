@@ -1,4 +1,5 @@
 import numpy as np
+import unyt
 import yt
 
 """
@@ -52,7 +53,7 @@ def estimate_hydrogen_ionizations(rho, eint, eos,
     if internal_constant:
         raise NotImplemented()
     else:
-        mH=yt.units.mh
+        mH=unyt.mh_cgs
 
     n_H = (X*rho/mH).to('cm**-3').v
     n_He = (Y*rho/(4*mH)).to('cm**-3').v
@@ -147,7 +148,7 @@ def create_nHI_field(ds, eos, metal_mass_frac,
         else:
             ifrac = max_ifrac
         nHI = ((data['density']*eos._my_chem.HydrogenFractionByMass * 
-                (1.0-ifrac))/yt.units.mh)
+                (1.0-ifrac))/unyt.mh_cgs)
         if target_units is None:
             return nHI
         else:
@@ -159,7 +160,7 @@ def create_nHI_field(ds, eos, metal_mass_frac,
     _default_keyword_values = (
         ('sampling_type', 'local'),
         ('units', 'auto'),
-        ('dimensions', yt.units.dimensions.number_density),
+        ('dimensions', unyt.dimensions.number_density),
         ('take_log', True)
     )
     for k,v in _default_keyword_values:
