@@ -136,11 +136,19 @@ def _convert_spherical_to_cartesian(r,theta_rad,phi_rad):
 def _find_obs_ray_end_points(ds, sky_latitude_ref_deg, 
                              observer_distance,
                              sky_delta_latitude_arr_deg,
-                             sky_longitude_arr_deg):
-    
+                             sky_longitude_arr_deg,
+                             rescale_length_factor = None):
+
+    # when rescale_length_factor is not None, the width of each cell is
+    # multiplied by this factor. (This effectively holds the position of the
+    # simulation's origin fixed in place).
+
     # choose an ending point that is sure to be farther than 
     # the furthest domain edge
     longest_width = np.sqrt(np.square(ds.domain_width).sum())
+
+    if rescale_length_factor is not None:
+        longest_width *= rescale_length_factor
 
     sky_theta_ref = np.deg2rad(90.0 - sky_latitude_ref_deg)
     sky_delta_theta = np.deg2rad(90.0 - sky_delta_latitude_arr_deg)
@@ -165,9 +173,48 @@ def transform_ray_end_points(ds, ray_end_points,
     """
     Convert the ray end points from the observer's coordinate system
     to the domain's coordinate system.
+
+    Parameters
+    ----------
+    ds
+        The simulation from which the output coordinate system is taken.
+    ray_end_points: np.ndarray
+        Array of N 3D vectors, with shape (N,3) which represents the endpoints
+        of the rays. These values are transformed.
+    observer_distance: unyt.unyt_quantity
+        Distance of the observer from the reference point.
+    sky_latitude_ref_deg: float
+        The latitude of the reference point from the observer's perspective in 
+        degrees. When this is positive, it denotes that many degrees above the 
+        observer's x-axis. When negative it denotes the number of degrees below
+        the observer's x-axis. When zero, the reference point lies along the 
+        observer's x-axis.
+    domain_reference_point: np.ndarray
+        Position of the reference point in the simulation domain (relative to 
+        the domain's origin). This is specified in the simulation's coordinate 
+        system.
+    domain_theta_rad, domain_phi_rad: float
+        Spherical coordinates of the observer relative to the reference point.
+
+    Notes
+    -----
+    A signficant amount of time elapsed between writing this function and adding
+    this docstring. I believe that this function has only been rigorously
+    tested with `sky_latitude_ref_deg=0`. This variable was put into place to 
+    get correct spacing of rays under various projections (i.e. mercator) when
+    observing objects at high sky latitudes. Since the sky_longitude doesn't 
+    affect mercator distributions, that has been assumed to be zero.
+
+
     
     TODO: Make this a class that can perform forward and reverse transformations
     """
+
+    # when rescale_length_factor is not None, the width of each cell is
+    # multiplied by this factor. (This effectively holds the position of the
+    # simulation's origin fixed in place). When not None, we should also
+    # require that (domain_reference_point.v == 0).all() to avoid ambiguities 
+    raise RuntimeError("Introduce rescale_length_factor")
 
     assert ds.coordinates.axis_order == ('x', 'y', 'z')
 

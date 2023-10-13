@@ -1,0 +1,102 @@
+% Note: this document was put together months after the code was written. It's conceivable that there a few minor mistakes here.
+
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{tikz}
+\usepackage{tikz-3dplot}
+
+\title{gasimage}
+\author{Matthew Abruzzo}
+\date{October 2021}
+
+\begin{document}
+
+
+
+\tdplotsetmaincoords{75}{80}
+
+%
+\pgfmathsetmacro{\rvec}{4}
+\pgfmathsetmacro{\thetavec}{70}
+\pgfmathsetmacro{\phivec}{135}
+
+\pgfmathsetmacro{\skylat}{55}
+
+%
+
+
+
+\begin{tikzpicture}[scale=2.5,tdplot_main_coords]
+
+%PRELUDE
+
+% set macros that define location of simulation origins
+% relative to refernce point
+\pgfmathsetmacro{\simox}{-0.9}
+\pgfmathsetmacro{\simoy}{-2.2}
+\pgfmathsetmacro{\simoz}{0.4}
+
+% create the coordinate where the reference point is
+% located
+\coordinate (R) at (0,0,0);
+
+% create the coordinate where the oberver is located
+\tdplotsetcoord{Observer}{\rvec}{\thetavec}{\phivec}
+
+% BEGIN DRAWING:
+
+% Draw coordinate axes at simulation  origin 
+\draw[thick,->] (\simox,\simoy,\simoz) -- (1+\simox,\simoy,\simoz) node[anchor=north east]{$x_{\rm sim}$};
+\draw[thick,->] (\simox,\simoy,\simoz) -- (\simox,1+\simoy,\simoz) node[anchor=south east]{$y_{\rm sim}$};
+\draw[thick,->] (\simox,\simoy,\simoz) -- (\simox,\simoy,1+\simoz) node[anchor=south]{$z_{\rm sim}$};
+
+
+% Draw coordinate axes at origin
+
+\draw[dashed,->] (0,0,0) -- (1.0,0,0) node[anchor=north ]{$\hat{x}_{\rm sim}$};
+\draw[dashed,->] (0,0,0) -- (0,1.0,0) node[anchor=west]{$\hat{y}_{\rm sim}$};
+\draw[dashed,->] (0,0,0) -- (0,0,1.0) node[anchor=south]{$\hat{z}_{\rm sim}$};
+
+% draw displacement vector between simulation origin and reference point
+\draw[->,red] (\simox,\simoy,\simoz) -- (0,0,0)  node[anchor=south east]{$\vec{R}$};
+\draw[dashed,red] (\simox,\simoy,\simoz) -- (0,0,\simoz) -- (0,0,0);
+
+\draw[-stealth,color=orange] (R) -- (Observer);
+\draw[dashed, color=orange] (R) -- (Observerxy);
+\draw[dashed, color=orange] (Observerxy) -- (Observer);
+
+\tdplotdrawarc{(R)}{0.5}{0}{\phivec}{anchor=north west}{$\phi_{\rm domain}$}
+\tdplotsetthetaplanecoords{\phivec}
+\tdplotdrawarc[tdplot_rotated_coords]{(0,0,0)}{0.5}{0}%
+{\thetavec}{anchor=south west}{$\theta_{\rm domain}$}
+
+
+% draw the observer's coordinate axes:
+\tdplotsetrotatedcoords{180+\phivec}{90 - \thetavec + \skylat}{0}
+\tdplotsetrotatedcoordsorigin{(Observer)}
+\draw[thick,color=blue,tdplot_rotated_coords,->] (0,0,0) --
+(1,0,0) node[anchor=north]{$x_{\rm observer}$};
+\draw[thick,color=blue,tdplot_rotated_coords,->] (0,0,0) --
+(0,1,0) node[anchor=west]{$y_{\rm observer}$};
+\draw[thick,color=blue,tdplot_rotated_coords,->] (0,0,0) --
+(0,0,1) node[anchor=south]{$z_{\rm observer}$};
+
+\tdplotsetthetaplanecoords{\phivec +180}
+
+%\skylat
+\tdplotdrawarc[tdplot_rotated_coords]{(0,0,0)}{0.6}{180 - \thetavec}%
+{180 - \thetavec + \skylat}{anchor=north }{$\lambda_{\rm sky}$}
+
+
+\end{tikzpicture}
+
+In the above picture:
+\begin{itemize}
+    \item $\vec{R}$ denotes the location of the ``reference point''. In the code, this is specified by some position, in the simulation domain.
+    \item The location of the reference point (relative to simulation's origin), the distance $d$ between the observer and the reference point, and the values of $\theta_{\rm domain}$ and $\phi_{\rm domain}$ are the only values that affect the orientation of the simulation domain (with respect to the observer).
+    \item $\lambda_{\rm sky}$ denotes the sky latitude of the reference point (from the observer's perspective). In the code, this is only considered for purposes of creating correct Mercator projections. (The choice of sky longitude has no effect on the resulting projection, so we simply assume it's zero - the user can arbitrarily change this later).
+    \item If the reference point is a distance $d$ from the observer, then in the observer's reference frame the location of the reference point is at $(x_{\rm observer}, y_{\rm observer}, z_{\rm observer}) = (d \cos \lambda_{\rm sky}, 0, d \sin  \lambda_{\rm sky})$
+\end{itemize}
+
+
+\end{document}
