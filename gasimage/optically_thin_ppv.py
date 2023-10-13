@@ -1,7 +1,16 @@
 import numpy as np
 import yt
 
-import schwimmbad
+try:
+    from schwimmbad import SerialPool as _DummySerialPool
+except ImportError:
+
+    class _DummySerialPool:
+        def map(self, func, iterable, callback = None):
+            for result in map(func, iterable):
+                if callback is not None:
+                    callback(result)
+                yield result
 
 import gc
 
@@ -307,6 +316,7 @@ class RayGridAssignments:
         return out
 
 
+
 def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
                        ndens_HI_field = ('gas', 'H_p0_number_density'),
                        doppler_v_width = None,
@@ -314,8 +324,9 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
                        rescale_length_factor = None,
                        pool = None):
     """
-    Generate a mock ppv image of a simulation using a ray-tracing radiative
-    transfer algorithm that assumes that the gas is optically thin.
+    Generate a mock ppv image (position-position-velocity image) of a
+    simulation using a ray-tracing radiative transfer algorithm that assumes 
+    that the gas is optically thin.
 
     Parameters
     ----------
@@ -369,12 +380,11 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
     else:
         rescale_length_factor = 1.0
 
-    if pool is None:
-        pool = schwimmbad.SerialPool()
+    pool = _DummySerialPool() if pool is None else pool
 
-    is_root = (not hasattr(pool,'is_master')) or pool.is_master()
+    is_mpi_root_proc = (not hasattr(pool,'is_master')) or pool.is_master()
 
-    if is_root:
+    if is_mpi_root_proc:
         # now get an instance of the dataset
         if isinstance(ds, yt.data_objects.static_output.Dataset):
             if not isinstance(pool, schwimmbad.SerialPool):
