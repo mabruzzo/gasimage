@@ -82,6 +82,9 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                           use_cython_gen_spec = False,
                           out = None):
 
+    # do NOT use grid to access length-scale information. This will really mess
+    # some things up related to rescale_length_factor
+
     if out is not None:
         assert out.shape == obs_freq.shape
     else:
@@ -158,13 +161,15 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
 
 class Worker:
     def __init__(self, ds_initializer, obs_freq, length_unit_name,
-                 ray_start, generate_ray_spectrum_kwargs):
+                 ray_start, rescale_length_factor,
+                 generate_ray_spectrum_kwargs):
         assert np.ndim(obs_freq) == 1
 
         self.ds_initializer = ds_initializer
         self.obs_freq = obs_freq
         self.length_unit_name = length_unit_name
         self.ray_start = ray_start
+        self.rescale_length_factor = rescale_length_factor
 
         for key in ['obs_freq', 'grid', 'grid_left_edge', 'grid_right_edge',
                     'cell_width', 'grid_shape', 'out', 'ray_start', 'ray_uvec']:
@@ -195,6 +200,8 @@ class Worker:
             = ds.index.grid_left_edge[grid_index].to(self.length_unit_name).v
         right_edge \
             = ds.index.grid_right_edge[grid_index].to(self.length_unit_name).v
+        left_edge *= self.rescale_length_factor
+        right_edge *= self.rescale_length_factor
         cell_width = ((right_edge - left_edge)/np.array(grid.shape))
 
         # now actually process the rays
@@ -249,10 +256,15 @@ def _top_level_grid_indices(ds):
 class RayGridAssignments:
     # Helper class that keeps track of which root-grids that each ray
     # intersects with.
-    def __init__(self, ds, ray_start, ray_stop_l, units):
+    def __init__(self, ds, ray_start, ray_stop_l, units,
+                 rescale_length_factor = 1.0):
         subgrid_array = _top_level_grid_indices(ds)
-        domain_left_edge = ds.domain_left_edge.to(units).v
-        domain_right_edge = ds.domain_right_edge.to(units).v
+        domain_left_edge = (
+            ds.domain_left_edge.to(units).v * rescale_length_factor
+        )
+        domain_right_edge = (
+            ds.domain_right_edge.to(units).v * rescale_length_factor
+        )
         cell_width = ((domain_right_edge - domain_left_edge)/
                       np.array(subgrid_array.shape))
         subgrid_array_shape = subgrid_array.shape
@@ -260,7 +272,7 @@ class RayGridAssignments:
         self._sequence_table = {}
 
         self._subgrids_with_rays = set()
-        
+
         for i, cur_ray_stop in enumerate(ray_stop_l):
             ray_vec = cur_ray_stop - ray_start
             ray_uvec = (ray_vec/np.sqrt((ray_vec*ray_vec).sum()))
@@ -299,9 +311,10 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
                        ndens_HI_field = ('gas', 'H_p0_number_density'),
                        doppler_v_width = None,
                        use_cython_gen_spec = False,
+                       rescale_length_factor = None,
                        pool = None):
     """
-    Generate a mock ppv image of a simulation using a ray-casting radiative
+    Generate a mock ppv image of a simulation using a ray-tracing radiative
     transfer algorithm that assumes that the gas is optically thin.
 
     Parameters
@@ -329,10 +342,17 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
         Generate the spectrum using the cython implementation. This is
         currently experimental (and should not be used until the results are 
         confirmed to be consistent with the python implementation).
+    rescale_length_factor: float, Optional
+        When not `None`, the width of each cell is multiplied by this factor.
+        (This effectively holds the position of the simulation's origin fixed
+        in place).
+    pool: Optional
+        A taskpool from the schwimmbad package can be specified for this
+        argument to facillitate parallelization.
 
     Notes
     -----
-    We assumed that v<<c. This let's us:
+    We assumed that v<<c. This lets us:
     - neglect the transverse redshift
     - approximate the longitudinal redshift as freq_obs = rest_freq*(1+vel/c)
 
@@ -344,7 +364,10 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
           compute the opacity at the nominal velocity of the velocity. In
           reality, I think velocity channels are probably more like bins
     """
-            
+    if rescale_length_factor is not None:
+        assert rescale_length_factor > 0 and np.ndim(rescale_length_factor) == 0
+    else:
+        rescale_length_factor = 1.0
 
     if pool is None:
         pool = schwimmbad.SerialPool()
@@ -362,14 +385,16 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
         else:
             my_ds = ds()
 
-        if np.logical_and(ray_start >= my_ds.domain_left_edge,
-                          ray_start <= my_ds.domain_right_edge).all():
-            raise RuntimeError()
+        _l = rescale_length_factor * my_ds.domain_left_edge
+        _r = rescale_length_factor * my_ds.domain_right_edge
+        if np.logical_and(ray_start >= _l, ray_start <= _r).all():
+            raise RuntimeError('We can potentially relax this in the future.')
     
         # use the code units (since the cell widths are usually better behaved)
         length_unit_name = 'code_length'
         length_unit_quan = my_ds.quan(1.0, 'code_length')
 
+        # there is no need to rescale ray_stop
         ray_start = ray_start.to('cm').v /length_unit_quan.to('cm').v
         ray_stop = ray_stop.to('cm').v / length_unit_quan.to('cm').v
         assert ray_start.shape == (3,)
@@ -381,9 +406,12 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
         assert ray_stop_2D.flags['C_CONTIGUOUS']
 
         print('Constructing RayGridAssignments')
-        subgrid_ray_map = RayGridAssignments(my_ds, ray_start,
-                                             ray_stop_l = ray_stop_2D,
-                                             units = length_unit_name)
+        subgrid_ray_map = RayGridAssignments(
+            my_ds, ray_start, ray_stop_l = ray_stop_2D,
+            units = length_unit_name,
+            rescale_length_factor = rescale_length_factor
+        )
+
         def generator():
             for grid_ind in range(my_ds.index.grids.size):
                 ray_idx =subgrid_ray_map.rays_associated_with_subgrid(grid_ind)
@@ -404,6 +432,7 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
             obs_freq = (rest_freq*(1+v_channels/yt.units.c_cgs)).to('Hz'),
             length_unit_name = length_unit_name,
             ray_start = ray_start,
+            rescale_length_factor = rescale_length_factor,
             generate_ray_spectrum_kwargs = {
                 'rest_freq' : rest_freq,
                 'cm_per_length_unit' : length_unit_quan.to('cm').v,

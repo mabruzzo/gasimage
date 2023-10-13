@@ -55,8 +55,7 @@ def rotate_from_obs_axes(points, observer_latitude_rad, domain_theta_rad,
 
     Notes
     -----
-    This could be significantly optimized:
-        - currently we multiply e
+    This could be significantly optimized
     """
     # in observer's coordinate axis ray to reference point lies
     # in x-z plane
@@ -205,16 +204,10 @@ def transform_ray_end_points(ds, ray_end_points,
     observing objects at high sky latitudes. Since the sky_longitude doesn't 
     affect mercator distributions, that has been assumed to be zero.
 
-
-    
-    TODO: Make this a class that can perform forward and reverse transformations
+    ToDo
+    ----
+    Make this a class that can perform forward and reverse transformations
     """
-
-    # when rescale_length_factor is not None, the width of each cell is
-    # multiplied by this factor. (This effectively holds the position of the
-    # simulation's origin fixed in place). When not None, we should also
-    # require that (domain_reference_point.v == 0).all() to avoid ambiguities 
-    raise RuntimeError("Introduce rescale_length_factor")
 
     assert ds.coordinates.axis_order == ('x', 'y', 'z')
 

@@ -59,7 +59,12 @@ def estimate_hydrogen_ionizations(rho, eint, eos,
     n_metal = (Z*rho/(mu_metal*mH)).to('cm**-3').v
 
     if mmw is None:
-        mmw = eos.calculate_mu(rho,eint,metal_mass_frac)
+        assert rho.flags['C_CONTIGUOUS']
+        assert eint.flags['C_CONTIGUOUS']
+        mmw = eos.calculate_mu(rho.ravel(order = 'C'),eint.ravel(order = 'C'),
+                               metal_mass_frac)
+        assert mmw.flags['C_CONTIGUOUS']
+        mmw.shape = rho.shape
     n_total = (rho/(mmw*mH)).to('cm**-3').v
     n_e = n_total - n_H - n_He - n_metal
 
@@ -125,10 +130,15 @@ def create_nHI_field(ds, eos, metal_mass_frac,
             ds.unit_system['specific_energy']
         )
 
+        try:
+            mmw = data['mean_molecular_weight']
+        except yt.utilities.exceptions.YTFieldNotFound:
+            mmw = None
+
         min_ifrac, max_ifrac = estimate_hydrogen_ionizations(
-            rho = data['density'], eint = eint, 
+            rho = data['density'], eint = eint,
             eos = eos, metal_mass_frac = metal_mass_frac,
-            mu_metal = mu_metal, mmw = data['mean_molecular_weight'],
+            mu_metal = mu_metal, mmw = mmw,
             internal_constant = False
         )
 
