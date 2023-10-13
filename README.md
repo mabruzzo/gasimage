@@ -28,3 +28,8 @@ using this code, there are few items that should be reviewed: (this is not exhau
 
 
 It's also worth noting the cython version of the radiative transfer is not currently in-use. There seems to be some minor bugs in it.
+
+Tests
+=====
+
+The test coverage is limitted (at best). You can run them with ``pytest``. Simply invoke ``pytest tests`` from the root-driectory
