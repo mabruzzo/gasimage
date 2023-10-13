@@ -1,3 +1,11 @@
 __pycache__/
 *.egg-info/
 *~
+build/
+*.ipynb_checkpoints/
+*.so
+
+# our convention is to cython files *_cy.pyx so we can be sure to ignore any
+# generated c/cpp files
+*_cy.c
+*_cy.cpp
