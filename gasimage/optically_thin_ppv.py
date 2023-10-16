@@ -1,3 +1,5 @@
+from typing import Dict, List, Set
+
 import numpy as np
 import yt
 
@@ -263,8 +265,20 @@ def _top_level_grid_indices(ds):
     return block_loc_array
 
 class RayGridAssignments:
-    # Helper class that keeps track of which root-grids that each ray
-    # intersects with.
+    # for the sake of clarity, let's list & annotate the instance variables of
+    # this class (These are not class variables!)
+
+    # a dictionary that associates sequences of grid-ids to ray-indices
+    # -> the keys are a unique list of grid-ids (this needs to be a tuple so
+    #    that it can be hashed)
+    # -> each key is associated with a list of ray ids (or indexes) that pass
+    #    through the sequence of grid-ids.
+    # -> a ray id cannot be associated with more than one grid-id-sequence
+    _sequence_table: Dict[Tuple[int,...],List[int]]
+
+    # this set lists all subgrid ids that are associated with one or more rays
+    _subgrids_with_rays: Set[int]
+
     def __init__(self, ds, ray_start, ray_stop_l, units,
                  rescale_length_factor = 1.0):
         subgrid_array = _top_level_grid_indices(ds)
@@ -304,9 +318,13 @@ class RayGridAssignments:
                 self._sequence_table[subgrid_sequence].append(i)
             else:
                 self._sequence_table[subgrid_sequence] = [i]
-        print(len(self._sequence_table))
+        #print(len(self._sequence_table))
         
     def rays_associated_with_subgrid(self, subgrid_id):
+        """
+        Returns the indicies of rays that are associated with the given
+        subgrid_id
+        """
         out = []
         if subgrid_id not in self._subgrids_with_rays:
             return out
@@ -462,6 +480,13 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
         out_2D.shape = (v_channels.size, -1)
 
         def callback(rslt):
+            # this callback function actually takes the result of each call to
+            # Worker.__call__ (once they have been communicated back to the
+            # primary thread) and consolidates them in the output array.
+            # - for testing this pipeline with a parallel-pool, it might be
+            #   convenient to add an option to force the contributions to be
+            #   added in a deterministic order
+            # - note: the order should always be deterministic in serial.
             grid_index, ray_spectra = rslt
             ray_idx = subgrid_ray_map.rays_associated_with_subgrid(grid_index)
             for i,ray_ind in enumerate(ray_idx):
