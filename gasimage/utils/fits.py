@@ -47,7 +47,11 @@ def _write_wcs_header(sky_longitude_arr_deg, sky_delta_latitude_arr_deg,
     hdr['BZERO'] = 0.0
 
     # This was specified in the reference file
-    hdr['OBSFREQ'] = rest_freq
+    if str(rest_freq.units) == 'Hz':
+        rest_freq_val = rest_freq.v
+    else:
+        rest_freq_val = rest_freq.to('Hz').v
+    hdr['OBSFREQ'] = float(rest_freq_val)
 
     return hdr
 
@@ -60,10 +64,12 @@ def write_to_fits(fname, ppv_Tb, sky_longitude_arr_deg,
     Writes a ppv image to disk as a FITS file. The intensity should be in terms
     of brightness temperature
     """
-    hdr = _write_wcs_header(sky_longitude_arr_deg,
-                            sky_delta_latitude_arr_deg,
-                            sky_latitude_ref_deg,
-                            v_channels, rest_freq)
+    hdr = _write_wcs_header(
+        sky_longitude_arr_deg = sky_longitude_arr_deg,
+        sky_delta_latitude_arr_deg = sky_delta_latitude_arr_deg,
+        sky_latitude_ref_deg = sky_latitude_ref_deg,
+        v_channels = v_channels, rest_freq = rest_freq
+    )
     return fits.writeto(fname,
-                        data = ppv_Tb.to('K').v.astype(np.float32), 
+                        data = ppv_Tb.to('K').v.astype(np.float32),
                         header = hdr, **writeto_kwargs)
