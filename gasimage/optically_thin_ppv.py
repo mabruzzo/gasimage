@@ -20,6 +20,14 @@ import gc
 from ._ray_intersections_cy import ray_box_intersections, traverse_grid
 from ._generate_spec_cy import _generate_ray_spectrum_cy
 
+def _has_consistent_dims(quantity, dims):
+    _dimensionless = unyt.dimensions.dimensionless
+    if isinstance(quantity, unyt.unyt_array):
+        if (quantity.units.is_dimensionless) and (dims == _dimensionless):
+            return True
+        return quantity.units.dimensions == dims
+    return dims == _dimensionless
+
 _inv_sqrt_pi = 1.0/np.sqrt(np.pi)
 
 def line_profile(obs_freq, doppler_v_width, rest_freq,
@@ -88,9 +96,9 @@ def _calc_doppler_v_width(grid,idx):
 
     # previously, a bug in the units caused a really hard to debug error (when
     # running the program in parallel. So now we manually check!
-    if str(T_vals.units) != 'K':
+    if not _has_consistent_dims(T_vals, unyt.dimensions.temperature):
         raise RuntimeError(f"{T_field!r}'s units are wrong")
-    elif not mmw_vals.units.is_dimensionless:
+    elif not _has_consistent_dims(mmw_vals, unyt.dimensions.dimensionless):
         raise RuntimeError(f"{mmw_field!r}'s units are wrong")
 
     return np.sqrt(2*unyt.kb_cgs * T_vals[idx] / (mmw_vals[idx] * unyt.mh_cgs))
@@ -520,20 +528,38 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
         return yt.YTArray(out_2D[:,0], out_units)
     else:
         return yt.YTArray(out, out_units)
-    
 
-def convert_intensity_to_Tb(ppv, rest_freq = 1.4204058E+09*unyt.Hz,
-                            v_channels = None):
-    if v_channels is not None:
+def convert_intensity_to_Tb(ppv, v_channels,
+                            rest_freq = 1.4204058E+09*unyt.Hz):
+    """
+    Convert intensity ppv array to brightness temperature
+
+    Notes
+    -----
+    The correctness of this calculation is not entirely clear
+    """
+
+    # it's possible that these dimensions are wrong (we may have implicitly
+    # dropped some silent units, like solid-angle
+    _ppv_dims = unyt.dimensions.energy / unyt.dimensions.area
+    if not _has_consistent_dims(ppv, _ppv_dims):
+        raise ValueError("ppv has the wrong units")
+    elif not _has_consistent_dims(rest_freq, unyt.dimensions.frequency):
+        raise ValueError("rest_freq doesn't have appropriate dimensions")
+
+    if v_channels is None:
+        freq = rest_freq
+    elif np.shape(v_channels) != np.shape(ppv)[:1]:
+        raise ValueError("when not None, the number of v_channels should "
+                         "match np.shape(ppv)[0]")
+    elif not _has_consistent_dims(v_channels, unyt.dimensions.velocity):
+        raise ValueError("v_channels has the wrong units")
+    else:
         # assume that velocity << c
         obs_freq = (rest_freq*(1+v_channels/unyt.c_cgs)).to('Hz')
         freq = obs_freq
-        assert v_channels.shape == ppv.shape[:1]
         new_shape = [1 for elem in ppv.shape]
         new_shape[0] = v_channels.size
         freq.shape = tuple(new_shape)
-
-    else:
-        freq = rest_freq
 
     return (0.5*(unyt.c_cgs/freq)**2 * ppv/unyt.kboltz_cgs).to('K')
