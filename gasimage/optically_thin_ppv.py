@@ -83,8 +83,17 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI,
         return integrated,optical_depth
 
 def _calc_doppler_v_width(grid,idx):
-    return np.sqrt(2*unyt.kb_cgs * grid['temperature'][idx]/
-                  (grid['mean_molecular_weight'][idx]*unyt.mh_cgs))
+    T_field, mmw_field = ('gas','temperature'), ('gas','mean_molecular_weight')
+    T_vals, mmw_vals = grid[T_field], grid[mmw_field]
+
+    # previously, a bug in the units caused a really hard to debug error (when
+    # running the program in parallel. So now we manually check!
+    if str(T_vals.units) != 'K':
+        raise RuntimeError(f"{T_field!r}'s units are wrong")
+    elif not mmw_vals.units.is_dimensionless:
+        raise RuntimeError(f"{mmw_field!r}'s units are wrong")
+
+    return np.sqrt(2*unyt.kb_cgs * T_vals[idx] / (mmw_vals[idx] * unyt.mh_cgs))
 
 def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                           cell_width, grid_shape, cm_per_length_unit,
