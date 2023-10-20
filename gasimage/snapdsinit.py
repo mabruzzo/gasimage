@@ -44,7 +44,8 @@ class SnapDatasetInitializer:
             if _CACHED_DATA is not None:
                 _CACHED_DATA[1].index.clear_all_data() # keep memory usage down!
             ds = yt.load(self._fname)
-            func = self._setup_func
-            func(ds)
+            if self._setup_func is not None:
+                func = self._setup_func
+                func(ds)
             _CACHED_DATA = (self._fname,ds)
         return ds
