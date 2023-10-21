@@ -108,6 +108,11 @@ def test_traverse_grid_small_truncation_probs():
     )
     assert (expected_idx == idx).all()
 
+from conftest import cmdopt
+
+def test_sample(cmdopt):
+    assert True
+
 if __name__ == '__main__':
     test_traverse_grid_small_truncation_probs()
     test_traverse_grid2()
