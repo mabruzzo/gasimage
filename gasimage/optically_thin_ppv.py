@@ -353,14 +353,18 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
         continue
     print('finished processing')
 
-    # need to think more about the about output units (specifically,
-    # think about dependence on solid angle)
-    out_units = 'erg/cm**2'
+    out_units = 'erg/(cm**2 * Hz * s * steradian)'
     if np.ndim(ray_stop) == 1:
         assert out_2D.shape == (v_channels.size, 1)
         return unyt.unyt_array(out_2D[:,0], out_units)
     else:
         return unyt.unyt_array(out, out_units)
+
+_intensity_dim = (
+    unyt.dimensions.energy /
+    (unyt.dimensions.area * unyt.dimensions.frequency * unyt.dimensions.time *
+     unyt.dimensions.solid_angle)
+)
 
 def convert_intensity_to_Tb(ppv, v_channels,
                             rest_freq = 1.4204058E+09*unyt.Hz):
@@ -372,10 +376,7 @@ def convert_intensity_to_Tb(ppv, v_channels,
     The correctness of this calculation is not entirely clear
     """
 
-    # it's possible that these dimensions are wrong (we may have implicitly
-    # dropped some silent units, like solid-angle
-    _ppv_dims = unyt.dimensions.energy / unyt.dimensions.area
-    if not _has_consistent_dims(ppv, _ppv_dims):
+    if not _has_consistent_dims(ppv, _intensity_dim):
         raise ValueError("ppv has the wrong units")
     elif not _has_consistent_dims(rest_freq, unyt.dimensions.frequency):
         raise ValueError("rest_freq doesn't have appropriate dimensions")
@@ -395,4 +396,22 @@ def convert_intensity_to_Tb(ppv, v_channels,
         new_shape[0] = v_channels.size
         freq.shape = tuple(new_shape)
 
-    return (0.5*(unyt.c_cgs/freq)**2 * ppv/unyt.kboltz_cgs).to('K')
+    # take some care with this conversion:
+    #
+    # - Recall that brightness temperature is the temperature that we'd plug
+    #   into the black-body radiation equation,
+    #                2 * h * nu**3              1
+    #      B_nu(T) = ------------- *  -----------------------
+    #                     c**2        exp(h*nu/(k_B * T)) - 1
+    #   to recover the B_nu equal I_nu (Note that B_nu has the same units
+    #   as I_nu).
+    #
+    # - since we're in the limit where h*nu << k_B*T, we can use the
+    #   Rayleigh-Jeans law:
+    #     B_nu = 2 * nu^2 * k_B * T / c**2
+    #
+    # - in each of the above equations, the RHS is missing an implicit
+    #   multiplication by `(1/steradian)`.
+
+    return (0.5*(unyt.c_cgs / freq)**2 * ppv * unyt.steradian /
+            unyt.kboltz_cgs).to('K')
