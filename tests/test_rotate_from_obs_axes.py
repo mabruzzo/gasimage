@@ -3,6 +3,8 @@ import yt
 from unyt.testing import assert_allclose_units
 
 from gasimage.ray_creation import rotate_from_obs_axes
+from gasimage.utils.testing import assert_allclose_units
+
 
 def test_rotate_from_obs_axes():
     ref_point = yt.YTArray([[3., 5., 10.]], 'kpc')
