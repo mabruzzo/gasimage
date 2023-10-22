@@ -150,7 +150,7 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
 
         # convert dz to cm to avoid problems later
         dz *= cm_per_length_unit
-        dz = yt.YTArray(dz, 'cm')
+        dz = unyt.unyt_array(dz, 'cm')
 
         # compute the velocity component. We should probably confirm
         # correctness of the velocity sign
@@ -525,9 +525,9 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
     out_units = 'erg/cm**2'
     if np.ndim(ray_stop) == 1:
         assert out_2D.shape == (v_channels.size, 1)
-        return yt.YTArray(out_2D[:,0], out_units)
+        return unyt.unyt_array(out_2D[:,0], out_units)
     else:
-        return yt.YTArray(out, out_units)
+        return unyt.unyt_array(out, out_units)
 
 def convert_intensity_to_Tb(ppv, v_channels,
                             rest_freq = 1.4204058E+09*unyt.Hz):
