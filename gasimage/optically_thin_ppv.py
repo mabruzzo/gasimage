@@ -24,14 +24,12 @@ from .utils.misc import _has_consistent_dims
 
 class Worker:
     def __init__(self, ds_initializer, obs_freq, length_unit_name,
-                 ray_start, rescale_length_factor,
-                 generate_ray_spectrum_kwargs):
+                 rescale_length_factor, generate_ray_spectrum_kwargs):
         assert np.ndim(obs_freq) == 1
 
         self.ds_initializer = ds_initializer
         self.obs_freq = obs_freq
         self.length_unit_name = length_unit_name
-        self.ray_start = ray_start
         self.rescale_length_factor = rescale_length_factor
 
         for key in ['obs_freq', 'grid', 'grid_left_edge', 'grid_right_edge',
@@ -43,7 +41,7 @@ class Worker:
 
 
     def __call__(self, elem):
-        grid_index, ray_uvec = elem
+        grid_index, ray_start, ray_uvec = elem
         assert (ray_uvec.ndim == 2) and ray_uvec.shape[1] == 3
 
         out = np.empty(shape = (ray_uvec.shape[0], self.obs_freq.size),
@@ -69,13 +67,14 @@ class Worker:
 
         # now actually process the rays
         for i in range(ray_uvec.shape[0]):
+            cur_ray_start = ray_start[i,:]
             cur_ray_uvec = ray_uvec[i,:]
 
             # generate the spectrum
             generate_ray_spectrum(
                 grid, grid_left_edge = left_edge, grid_right_edge = right_edge,
                 cell_width = cell_width, grid_shape = grid_shape,
-                ray_start = self.ray_start, ray_uvec = cur_ray_uvec,
+                ray_start = cur_ray_start, ray_uvec = cur_ray_uvec,
                 obs_freq = self.obs_freq, out = out[i,:],
                 **self.generate_ray_spectrum_kwargs
             )
@@ -302,9 +301,9 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
                     print('grid_index = ', grid_ind, ' num_rays = ',
                           len(ray_idx))
 
-                
-                ray_uvec = np.copy(ray_collection.get_ray_uvec()[ray_idx,:])
-                yield grid_ind, ray_uvec
+                ray_start_codeLen, ray_uvec = \
+                    ray_collection.get_selected_raystart_rayuvec(ray_idx)
+                yield grid_ind, ray_start_codeLen, ray_uvec
 
 
         # create the worker
@@ -313,7 +312,6 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
             ds_initializer = ds,
             obs_freq = (rest_freq*(1+v_channels/unyt.c_cgs)).to('Hz'),
             length_unit_name = length_unit_name,
-            ray_start = ray_start,
             rescale_length_factor = rescale_length_factor,
             generate_ray_spectrum_kwargs = {
                 'rest_freq' : rest_freq,

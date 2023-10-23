@@ -90,6 +90,19 @@ class ConcreteRayCollection:
     def get_ray_uvec(self):
         return _convert_vec_l_to_uvec_l(self._ray_vec)
 
+    def get_selected_raystart_rayuvec(self, idx):
+        ray_start = self.ray_start_codeLen[idx, :]
+        ray_start.flags['WRITEABLE'] = False
+
+        ray_uvec = self.get_ray_uvec()[idx, :]
+        ray_uvec.flags['WRITEABLE'] = False
+
+        # if self.ray_start_codeLen.strides[0] OR self._ray_vec.strides[0] is
+        # equal to 0, we may be able to get clever (and reduce the size of the
+        # returned arrays... - this could be useful when they are dispatched as
+        # messages)
+        return ray_start, ray_uvec
+
 
 class PerspectiveRayCollection:
     def __init__(self, ray_start_codeLen, ray_stop_codeLen):
