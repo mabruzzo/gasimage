@@ -1,4 +1,7 @@
 import numpy as np
+import unyt
+
+from .utils.misc import _has_consistent_dims
 
 def _is_np_ndarray(obj): # confirm its an instance, but not a subclass
     return obj.__class__ is np.ndarray
@@ -12,12 +15,13 @@ def _convert_vec_l_to_uvec_l(vec_l):
 
 def _check_ray_args(arg0, arg1, name_pair,
                     expect_3D_arg0 = False,
-                    expect_1D_arg1 = False):
+                    expect_1D_arg1 = False,
+                    check_type = True):
     arg0_name, arg1_name = name_pair
-    if not _is_np_ndarray(arg0):
+    if check_type and not _is_np_ndarray(arg0):
         raise TypeError(
             f"{arg0_name} must be a np.ndarray, not '{type(arg0).__name__}'")
-    elif not _is_np_ndarray(arg1):
+    elif check_type and not _is_np_ndarray(arg1):
         raise TypeError(
             f"{arg1_name} must be a np.ndarray, not '{type(arg1).__name__}'")
     elif arg0.shape[-1] != 3:
@@ -117,31 +121,45 @@ class ConcreteRayList:
 
 
 class PerspectiveRayGrid2D:
-    def __init__(self, ray_start_codeLen, ray_stop_codeLen):
-        _check_ray_args(ray_stop_codeLen, ray_start_codeLen,
-                        ("ray_stop_codeLen", "ray_start_codeLen"),
-                        expect_3D_arg0 = True,
-                        expect_1D_arg1 = True)
-        self.ray_start_codeLen = ray_start_codeLen
-        self.ray_stop_codeLen = ray_stop_codeLen
+    def __init__(self, ray_start, ray_stop):
+        _check_ray_args(ray_stop, ray_start, ("ray_stop", "ray_start"),
+                        expect_3D_arg0 = True, expect_1D_arg1 = True,
+                        check_type = False)
 
-        self._ray_stop_2D = self.ray_stop_codeLen.view()
-        self._ray_stop_2D.shape = (-1,3)
-        assert self._ray_stop_2D.flags['C_CONTIGUOUS']
+        assert _has_consistent_dims(ray_start, unyt.dimensions.length)
+        assert _has_consistent_dims(ray_stop, unyt.dimensions.length)
+
+        self.ray_start = ray_start
+        self.ray_stop = ray_stop
 
     def shape(self):
-        return self.ray_stop_codeLen.shape[:-1]
+        return self.ray_stop.shape[:-1]
 
-    def as_concrete_ray_list(self):
+    def as_concrete_ray_list(self, length_unit_quan):
+        assert _has_consistent_dims(length_unit_quan, unyt.dimensions.length)
+
         # TODO: consider trying out np.broadcast_to to attempt to reduce space
         #       (while the result won't be contiguous along axis 0, it should
         #       still be contiguous along axis 1)
 
-        num_list_entries = self._ray_stop_2D.shape[0]
-        
+
+        # TODO: with some refactoring, we could probably avoid rescaling
+        #       self.ray_stop
+
+        # the current convention is for length_unit_quan to specify the
+        # code_length
+        ray_start = self.ray_start.to('cm').v /length_unit_quan.to('cm').v
+        ray_stop = self.ray_stop.to('cm').v / length_unit_quan.to('cm').v
+
+        _ray_stop_2D = ray_stop.view()
+        _ray_stop_2D.shape = (-1,3)
+        assert _ray_stop_2D.flags['C_CONTIGUOUS']
+
+        num_list_entries = _ray_stop_2D.shape[0]
+
         return ConcreteRayList.from_start_stop(
-            np.tile(self.ray_start_codeLen, (num_list_entries, 1)),
-            self._ray_stop_2D
+            np.tile(ray_start, (num_list_entries, 1)),
+            _ray_stop_2D
         )
 
 """
