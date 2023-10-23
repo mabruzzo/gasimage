@@ -100,6 +100,7 @@ class ConcreteRayList:
     def __len__(self):
         return self.ray_start_codeLen.shape[0]
 
+    @property
     def shape(self):
         return (len(self.shape),)
 
@@ -130,6 +131,16 @@ class ConcreteRayList:
 
 
 class PerspectiveRayGrid2D:
+    """
+    Parameters
+    ----------
+    ray_start: 1D `unyt.unyt_array`
+        A (3,) array that specifies the observer's location (with respect to
+        the dataset's coordinate system). Currently, this must be located
+        outside of the simulation domain.
+    ray_stop: 3D `unyt.unyt_array`
+        A (m,n,3) array specifying the location where each ray stops.
+    """
     def __init__(self, ray_start, ray_stop):
         _check_ray_args(ray_stop, ray_start, ("ray_stop", "ray_start"),
                         expect_3D_arg0 = True, expect_1D_arg1 = True,
@@ -141,6 +152,7 @@ class PerspectiveRayGrid2D:
         self.ray_start = ray_start
         self.ray_stop = ray_stop
 
+    @property
     def shape(self):
         return self.ray_stop.shape[:-1]
 

@@ -19,7 +19,7 @@ import gc
 
 from ._ray_intersections_cy import ray_box_intersections, traverse_grid
 from .generate_ray_spectrum import generate_ray_spectrum
-from .ray_collection import ConcreteRayList, PerspectiveRayGrid2D
+from .ray_collection import ConcreteRayList
 from .utils.misc import _has_consistent_dims
 
 class Worker:
@@ -184,7 +184,7 @@ class RayGridAssignments:
 
 
 
-def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
+def optically_thin_ppv(v_channels, ray_collection, ds,
                        ndens_HI_field = ('gas', 'H_p0_number_density'),
                        doppler_v_width = None,
                        use_cython_gen_spec = False,
@@ -199,12 +199,9 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
     ----------
     v_channels: 1D `unyt.unyt_array`
         A monotonically increasing array of velocity channels.
-    ray_start: 1D `unyt.unyt_array`
-        A (3,) array that specifies the observer's location (with respect to
-        the dataset's coordinate system). Currently, this must be located 
-        outside of the simulation domain.
-    ray_stop: 3D `unyt.unyt_array`
-        A (m,n,3) array specifying the location where each ray stops.
+    ray_collection:
+        A collection of rays. This should be an instance of one of the classes
+        defined in this package
     ds: `yt.data_objects.static_output.Dataset` or `SnapDatasetInitializer`
         The dataset or an object that initializes the dataset from which the
         image is constructed. If ds is the dataset, itself, this function
@@ -262,19 +259,20 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
         else:
             my_ds = ds()
 
-        # create the iterator
-        _ray_collection = PerspectiveRayGrid2D(ray_start, ray_stop)
-
-        if hasattr(_ray_collection, 'domain_edge_sanity_check'):
+        if hasattr(ray_collection, 'domain_edge_sanity_check'):
             _l = rescale_length_factor * my_ds.domain_left_edge
             _r = rescale_length_factor * my_ds.domain_right_edge
-            _ray_collection.domain_edge_sanity_check(_l,_r)
+            ray_collection.domain_edge_sanity_check(_l,_r)
 
+        # create the iterator
         # use the code units (since the cell widths are usually better behaved)
         length_unit_name = 'code_length'
         length_unit_quan = my_ds.quan(1.0, 'code_length')
 
-        ray_list = _ray_collection.as_concrete_ray_list(length_unit_quan)
+        if isinstance(ray_collection, ConcreteRayList):
+            ray_list = ray_collection
+        else:
+            ray_list = ray_collection.as_concrete_ray_list(length_unit_quan)
 
         print('Constructing RayGridAssignments')
         subgrid_ray_map = RayGridAssignments(
@@ -315,7 +313,7 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
         
 
         # create the output array and callback function
-        out_shape = (v_channels.size,) + ray_stop.shape[:-1]
+        out_shape = (v_channels.size,) + ray_collection.shape
         out = np.zeros(shape = out_shape)
 
         # flatten the out array down to 2-dimensions:
@@ -346,7 +344,7 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
     print('finished processing')
 
     out_units = 'erg/(cm**2 * Hz * s * steradian)'
-    if np.ndim(ray_stop) == 1:
+    if len(ray_collection.shape) == 1:
         assert out_2D.shape == (v_channels.size, 1)
         return unyt.unyt_array(out_2D[:,0], out_units)
     else:

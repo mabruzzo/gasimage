@@ -2,9 +2,11 @@ import numpy as np
 import unyt
 import yt
 
+from gasimage.ray_collection import PerspectiveRayGrid2D
 from gasimage.ray_creation import \
     transform_ray_end_points, _find_obs_ray_end_points
 from gasimage.optically_thin_ppv import optically_thin_ppv
+
 
 # this is mostly for testing-purposes!
 # - in the future, I want to rewrite things so we don't need to worry as much
@@ -125,11 +127,12 @@ def generate_image_arr(ds_initializer, v_channels, sky_delta_latitude_arr_deg,
         domain_phi_rad = domain_phi_rad
     )
 
+    ray_collection = PerspectiveRayGrid2D(ray_start, ray_stop)
+
     t1 = datetime.datetime.now()
     print('raycasting start time:', t1.time())
     out = optically_thin_ppv(
-        v_channels, ray_start = ray_start, 
-        ray_stop = ray_stop, ds = ds_initializer,
+        v_channels, ray_collection = ray_collection, ds = ds_initializer,
         ndens_HI_field = ('gas', 'H_p0_number_density'),
         doppler_v_width = None,
         use_cython_gen_spec = False, # the function must be tested when True
