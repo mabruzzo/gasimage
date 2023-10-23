@@ -106,6 +106,15 @@ class ConcreteRayList:
     def get_ray_uvec(self):
         return _convert_vec_l_to_uvec_l(self._ray_vec)
 
+    # this is temporarily commented out since we'll get funky behavior when
+    # self.ray_start_codeLen is not actually in code-units
+    # -> in principle, this can happen if as_concrete_ray_list(arg), with an
+    #    argument other than 1 code-length
+    #def domain_edge_sanity_check(self, self.left, self.right):
+    #    if np.logical_and(self.ray_start_codeLen >= _l,
+    #                      self.ray_start_codeLen <= _r).all():
+    #        raise RuntimeError('We can potentially relax this in the future.')
+
     def get_selected_raystart_rayuvec(self, idx):
         ray_start = self.ray_start_codeLen[idx, :]
         ray_start.flags['WRITEABLE'] = False
@@ -135,7 +144,14 @@ class PerspectiveRayGrid2D:
     def shape(self):
         return self.ray_stop.shape[:-1]
 
+    def domain_edge_sanity_check(self, left, right):
+        if np.logical_and(self.ray_start >= left,
+                          self.ray_start <= right).all():
+            raise RuntimeError('We can potentially relax this in the future.')
+
     def as_concrete_ray_list(self, length_unit_quan):
+        # at the moment, length_unit_quan should really specify code_length
+
         assert _has_consistent_dims(length_unit_quan, unyt.dimensions.length)
 
         # TODO: consider trying out np.broadcast_to to attempt to reduce space

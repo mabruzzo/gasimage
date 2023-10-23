@@ -262,18 +262,18 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
         else:
             my_ds = ds()
 
-        _l = rescale_length_factor * my_ds.domain_left_edge
-        _r = rescale_length_factor * my_ds.domain_right_edge
-        if np.logical_and(ray_start >= _l, ray_start <= _r).all():
-            raise RuntimeError('We can potentially relax this in the future.')
-
         # create the iterator
+        _ray_collection = PerspectiveRayGrid2D(ray_start, ray_stop)
+
+        if hasattr(_ray_collection, 'domain_edge_sanity_check'):
+            _l = rescale_length_factor * my_ds.domain_left_edge
+            _r = rescale_length_factor * my_ds.domain_right_edge
+            _ray_collection.domain_edge_sanity_check(_l,_r)
 
         # use the code units (since the cell widths are usually better behaved)
         length_unit_name = 'code_length'
         length_unit_quan = my_ds.quan(1.0, 'code_length')
 
-        _ray_collection = PerspectiveRayGrid2D(ray_start, ray_stop)
         ray_list = _ray_collection.as_concrete_ray_list(length_unit_quan)
 
         print('Constructing RayGridAssignments')
