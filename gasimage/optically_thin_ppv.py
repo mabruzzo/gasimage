@@ -43,10 +43,10 @@ class Worker:
 
 
     def __call__(self, elem):
-        grid_index, ray_stop_locs = elem
-        assert (ray_stop_locs.ndim == 2) and ray_stop_locs.shape[1] == 3
+        grid_index, ray_uvec = elem
+        assert (ray_uvec.ndim == 2) and ray_uvec.shape[1] == 3
 
-        out = np.empty(shape = (ray_stop_locs.shape[0], self.obs_freq.size),
+        out = np.empty(shape = (ray_uvec.shape[0], self.obs_freq.size),
                        dtype = np.float64)
 
         # load the dataset
@@ -68,17 +68,14 @@ class Worker:
         cell_width = ((right_edge - left_edge)/np.array(grid.shape))
 
         # now actually process the rays
-        for i in range(ray_stop_locs.shape[0]):
-            cur_ray_stop = ray_stop_locs[i,:]
-
-            ray_vec = cur_ray_stop - self.ray_start
-            ray_uvec = (ray_vec/np.sqrt((ray_vec*ray_vec).sum()))
+        for i in range(ray_uvec.shape[0]):
+            cur_ray_uvec = ray_uvec[i,:]
 
             # generate the spectrum
             generate_ray_spectrum(
                 grid, grid_left_edge = left_edge, grid_right_edge = right_edge,
                 cell_width = cell_width, grid_shape = grid_shape,
-                ray_start = self.ray_start, ray_uvec = ray_uvec,
+                ray_start = self.ray_start, ray_uvec = cur_ray_uvec,
                 obs_freq = self.obs_freq, out = out[i,:],
                 **self.generate_ray_spectrum_kwargs
             )
@@ -172,7 +169,6 @@ class RayGridAssignments:
                 self._sequence_table[subgrid_sequence].append(i)
             else:
                 self._sequence_table[subgrid_sequence] = [i]
-        #print(len(self._sequence_table))
         
     def rays_associated_with_subgrid(self, subgrid_id):
         """
@@ -306,8 +302,9 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
                     print('grid_index = ', grid_ind, ' num_rays = ',
                           len(ray_idx))
 
-                ray_stop_loc = np.copy(ray_stop_2D[ray_idx,:])
-                yield grid_ind, ray_stop_loc
+                
+                ray_uvec = np.copy(ray_collection.get_ray_uvec()[ray_idx,:])
+                yield grid_ind, ray_uvec
 
 
         # create the worker
