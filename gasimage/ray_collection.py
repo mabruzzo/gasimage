@@ -38,9 +38,9 @@ def _check_ray_args(arg0, arg1, name_pair, expect_1D_arg1 = False):
     #    raise ValueError(f"{arg1_name} must be contiguous along axis -1")
 
 
-class ConcreteRayCollection:
+class ConcreteRayList:
     """
-    Collection of rays
+    Immutable list of rays.
 
     Note
     ----
@@ -84,8 +84,8 @@ class ConcreteRayCollection:
     def __len__(self):
         return self.ray_start_codeLen.shape[0]
 
-    def as_concrete_ray_collection(self):
-        return self
+    def shape(self):
+        return (len(self.shape),)
 
     def get_ray_uvec(self):
         return _convert_vec_l_to_uvec_l(self._ray_vec)
@@ -115,11 +115,11 @@ class PerspectiveRayCollection:
     def __len__(self):
         return self.ray_stop_codeLen.shape[0]
 
-    def as_concrete_ray_collection(self):
+    def as_concrete_ray_list(self):
         # TODO: consider trying out np.broadcast_to to attempt to reduce space
         #       (while the result won't be contiguous along axis 0, it should
         #       still be contiguous along axis 1)
-        return ConcreteRayCollection.from_start_stop(
+        return ConcreteRayList.from_start_stop(
             np.tile(self.ray_start_codeLen, (len(self), 1)),
             self.ray_stop_codeLen
         )
@@ -144,6 +144,6 @@ class ParallelRayCollection:
         # TODO: consider trying out np.broadcast to attempt to reduce space
         #       (while the result won't be contiguous along axis 0, it should
         #       still be contiguous along axis 1)
-        return ConcreteRayCollection(self.ray_start_codeLen,
-                                     np.tile(self._ray_vec, (len(self), 1)))
+        return ConcreteRayList(self.ray_start_codeLen,
+                               np.tile(self._ray_vec, (len(self), 1)))
 """

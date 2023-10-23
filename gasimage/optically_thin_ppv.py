@@ -19,7 +19,7 @@ import gc
 
 from ._ray_intersections_cy import ray_box_intersections, traverse_grid
 from .generate_ray_spectrum import generate_ray_spectrum
-from .ray_collection import ConcreteRayCollection, PerspectiveRayCollection
+from .ray_collection import ConcreteRayList, PerspectiveRayCollection
 from .utils.misc import _has_consistent_dims
 
 class Worker:
@@ -127,7 +127,7 @@ class RayGridAssignments:
     # this set lists all subgrid ids that are associated with one or more rays
     _subgrids_with_rays: Set[int]
 
-    def __init__(self, ds, ray_collection, units,
+    def __init__(self, ds, ray_list, units,
                  rescale_length_factor = 1.0):
         subgrid_array = _top_level_grid_indices(ds)
         domain_left_edge = (
@@ -144,10 +144,10 @@ class RayGridAssignments:
 
         self._subgrids_with_rays = set()
 
-        ray_uvec_l = ray_collection.get_ray_uvec()
+        ray_uvec_l = ray_list.get_ray_uvec()
 
-        for i in range(len(ray_collection)):
-            ray_start = ray_collection.ray_start_codeLen[i,:]
+        for i in range(len(ray_list)):
+            ray_start = ray_list.ray_start_codeLen[i,:]
             ray_uvec = ray_uvec_l[i,:]
 
             intersect_dist = ray_box_intersections(
@@ -283,11 +283,11 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
         assert ray_stop_2D.flags['C_CONTIGUOUS']
 
         _ray_collection = PerspectiveRayCollection(ray_start, ray_stop_2D)
-        ray_collection = _ray_collection.as_concrete_ray_collection()
+        ray_list = _ray_collection.as_concrete_ray_list()
 
         print('Constructing RayGridAssignments')
         subgrid_ray_map = RayGridAssignments(
-            my_ds, ray_collection = ray_collection,
+            my_ds, ray_list = ray_list,
             units = length_unit_name,
             rescale_length_factor = rescale_length_factor
         )
@@ -302,7 +302,7 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
                           len(ray_idx))
 
                 ray_start_codeLen, ray_uvec = \
-                    ray_collection.get_selected_raystart_rayuvec(ray_idx)
+                    ray_list.get_selected_raystart_rayuvec(ray_idx)
                 yield grid_ind, ray_start_codeLen, ray_uvec
 
 
