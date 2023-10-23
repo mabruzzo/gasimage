@@ -19,6 +19,7 @@ import gc
 
 from ._ray_intersections_cy import ray_box_intersections, traverse_grid
 from .generate_ray_spectrum import generate_ray_spectrum
+from .ray_collection import ConcreteRayCollection, PerspectiveRayCollection
 from .utils.misc import _has_consistent_dims
 
 class Worker:
@@ -130,7 +131,7 @@ class RayGridAssignments:
     # this set lists all subgrid ids that are associated with one or more rays
     _subgrids_with_rays: Set[int]
 
-    def __init__(self, ds, ray_start, ray_stop_l, units,
+    def __init__(self, ds, ray_collection, units,
                  rescale_length_factor = 1.0):
         subgrid_array = _top_level_grid_indices(ds)
         domain_left_edge = (
@@ -147,9 +148,11 @@ class RayGridAssignments:
 
         self._subgrids_with_rays = set()
 
-        for i, cur_ray_stop in enumerate(ray_stop_l):
-            ray_vec = cur_ray_stop - ray_start
-            ray_uvec = (ray_vec/np.sqrt((ray_vec*ray_vec).sum()))
+        ray_uvec_l = ray_collection.get_ray_uvec()
+
+        for i in range(len(ray_collection)):
+            ray_start = ray_collection.ray_start_codeLen[i,:]
+            ray_uvec = ray_uvec_l[i,:]
 
             intersect_dist = ray_box_intersections(
                 line_start = ray_start, line_uvec = ray_uvec, 
@@ -284,9 +287,12 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
         ray_stop_2D.shape = (-1,3)
         assert ray_stop_2D.flags['C_CONTIGUOUS']
 
+        _ray_collection = PerspectiveRayCollection(ray_start, ray_stop_2D)
+        ray_collection = _ray_collection.to_concrete_ray_collection()
+
         print('Constructing RayGridAssignments')
         subgrid_ray_map = RayGridAssignments(
-            my_ds, ray_start, ray_stop_l = ray_stop_2D,
+            my_ds, ray_collection = ray_collection,
             units = length_unit_name,
             rescale_length_factor = rescale_length_factor
         )
