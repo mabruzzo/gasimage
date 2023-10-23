@@ -3,6 +3,7 @@ import unyt
 
 from ._generate_spec_cy import _generate_ray_spectrum_cy
 from ._ray_intersections_cy import traverse_grid
+from .rt_config import default_spin_flip_props
 from .utils.misc import _has_consistent_dims
 
 _inv_sqrt_pi = 1.0/np.sqrt(np.pi)
@@ -188,6 +189,7 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
         ('gas','velocity_x'), ('gas','velocity_y'), ('gas','velocity_z')
     )
 
+    spin_flip_props = default_spin_flip_props()
 
     if True:
         try:
@@ -249,7 +251,12 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                 obs_freq = obs_freq, velocities = vlos, 
                 ndens_HI = grid[ndens_HI_field][idx],
                 doppler_v_width = cur_doppler_v_width, 
-                rest_freq = rest_freq, dz = dz)
+                rest_freq = spin_flip_props.freq_quantity,
+                dz = dz,
+                A10 = spin_flip_props.A10_quantity,
+                only_spontaneous_emission = True,
+                level_pops_from_stat_weights = True,
+                ignore_natural_broadening = True)
     return out
 
 
