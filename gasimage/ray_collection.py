@@ -1,6 +1,7 @@
 import numpy as np
 import unyt
 
+from .ray_creation import transform_ray_end_points, _find_obs_ray_end_points
 from .utils.misc import _has_consistent_dims
 
 def _is_np_ndarray(obj): # confirm its an instance, but not a subclass
@@ -132,6 +133,11 @@ class ConcreteRayList:
 
 class PerspectiveRayGrid2D:
     """
+    A 2D Grid of rays that all trace to a single observer.
+
+    Users should avoid constructing this directly. Instead, they should 
+    construct instances via build_perspective_grid.
+
     Parameters
     ----------
     ray_start: 1D `unyt.unyt_array`
@@ -189,6 +195,74 @@ class PerspectiveRayGrid2D:
             np.tile(ray_start, (num_list_entries, 1)),
             _ray_stop_2D
         )
+
+
+    
+def build_perspective_grid(ds, sky_latitude_ref_deg, observer_distance,
+                           sky_delta_latitude_arr_deg,
+                           sky_longitude_arr_deg,
+                           domain_theta_rad,
+                           domain_phi_rad,
+                           rescale_length_factor):
+    """
+    Construct a collection of rays that all trace back to a single observer.
+
+    Parameters
+    ----------
+    ds
+        The simulation from which the output coordinate system is taken.
+    sky_delta_latitude_arr_deg: 1D np.ndarray
+        Array of sky-latitude locations (in degrees), where rays should be 
+        traced. These are measured with respect to the sky-latitude of the ray
+        between the observer and the reference point, from the observer's
+        perspective. That reference sky-latitude is specified by 
+        sky_latitude_ref_deg.
+    sky_longitude_arr_deg: 1D np.ndarray
+        Array of sky-longitude locations (in degrees), where rays should be 
+        traced. For reference, the sky-longitude of the ray between the
+        observer and the reference point is always assumed to be zero because
+        it has no effect on the resulting mercator projection and can be 
+        arbitrarily changed later.
+    observer_distance : unyt.unyt_quantity
+        Distance between the observer and the reference point (which currently 
+        coincides with the center of the simulation domain).
+    sky_latitude_ref_deg: float, optional
+        specify the latitude on the sky (from the observer's perspective) that 
+        the primary ray passes through. This can have significant implications 
+        for the mercator projection. The default value is 0.0 (corresponding to
+        the celestial equator). 
+    domain_theta_rad, domain_phi_rad: float
+        Alongside obs_distance, these quantities specify the location of the 
+        observer in spherical coordinates relative to the reference point
+        (which is currently assumed to coincide with the center of the
+        simulation domain). Note that the spherical coordinates assuming that 
+        the x,y, and z directions align with the simulation's native coordinate
+        axes (for reference, the x,y,z directions in the observer's frame are
+        generally different).
+    rescale_length_factor: float, Optional
+        When not `None`, the width of each cell is multiplied by this factor.
+        (This effectively holds the position of the simulation's origin fixed
+        in place).
+    """
+
+    # the following is somewhat roundabout...
+    end_points = _find_obs_ray_end_points(
+        ds, sky_latitude_ref_deg = sky_latitude_ref_deg,
+        observer_distance = observer_distance,
+        sky_delta_latitude_arr_deg = sky_delta_latitude_arr_deg,
+        sky_longitude_arr_deg = sky_longitude_arr_deg,
+        rescale_length_factor = rescale_length_factor
+    )
+
+    ray_start, ray_stop = transform_ray_end_points(
+        ds, ray_end_points = end_points,
+        observer_distance = observer_distance,
+        sky_latitude_ref_deg = sky_latitude_ref_deg,
+        domain_reference_point = ds.arr([0.0,0.0,0.],'cm'),
+        domain_theta_rad = domain_theta_rad,
+        domain_phi_rad = domain_phi_rad
+    )
+    return PerspectiveRayGrid2D(ray_start, ray_stop)
 
 """
 class ParallelRayCollection:

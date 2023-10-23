@@ -2,7 +2,7 @@ import numpy as np
 import unyt
 import yt
 
-from gasimage.ray_collection import PerspectiveRayGrid2D
+from gasimage.ray_collection import build_perspective_grid
 from gasimage.ray_creation import \
     transform_ray_end_points, _find_obs_ray_end_points
 from gasimage.optically_thin_ppv import optically_thin_ppv
@@ -109,25 +109,15 @@ def generate_image_arr(ds_initializer, v_channels, sky_delta_latitude_arr_deg,
         assert rescale_length_factor > 0 and np.ndim(rescale_length_factor) == 0
 
     # determine the starting and ending points of all rays
-    # TODO: refactor this code: we don't need to know the endpoints (just the
-    #       starting point and the vector describing the ray's path)
-    end_points = _find_obs_ray_end_points(
-        _ds, sky_latitude_ref_deg = sky_latitude_ref_deg,
+    ray_collection = build_perspective_grid(
+        ds = _ds, sky_latitude_ref_deg = sky_latitude_ref_deg,
         observer_distance = obs_distance,
         sky_delta_latitude_arr_deg = sky_delta_latitude_arr_deg,
         sky_longitude_arr_deg = sky_longitude_arr_deg,
+        domain_theta_rad = domain_theta_rad,
+        domain_phi_rad = domain_phi_rad,
         rescale_length_factor = rescale_length_factor
     )
-
-    ray_start, ray_stop = transform_ray_end_points(
-        _ds, ray_end_points = end_points,  observer_distance = obs_distance,
-        sky_latitude_ref_deg = sky_latitude_ref_deg,
-        domain_reference_point = _ds.arr([0.0,0.0,0.],'cm'),
-        domain_theta_rad = domain_theta_rad,
-        domain_phi_rad = domain_phi_rad
-    )
-
-    ray_collection = PerspectiveRayGrid2D(ray_start, ray_stop)
 
     t1 = datetime.datetime.now()
     print('raycasting start time:', t1.time())
