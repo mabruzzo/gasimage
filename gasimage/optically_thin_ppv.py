@@ -284,7 +284,7 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
         assert ray_stop_2D.flags['C_CONTIGUOUS']
 
         _ray_collection = PerspectiveRayCollection(ray_start, ray_stop_2D)
-        ray_collection = _ray_collection.to_concrete_ray_collection()
+        ray_collection = _ray_collection.as_concrete_ray_collection()
 
         print('Constructing RayGridAssignments')
         subgrid_ray_map = RayGridAssignments(
