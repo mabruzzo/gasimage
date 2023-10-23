@@ -10,7 +10,9 @@ def _convert_vec_l_to_uvec_l(vec_l):
         raise RuntimeError("there's a case where the vector has 0 magnitude")
     return vec_l/np.sqrt(mag_square[np.newaxis].T)
 
-def _check_ray_args(arg0, arg1, name_pair, expect_1D_arg1 = False):
+def _check_ray_args(arg0, arg1, name_pair,
+                    expect_3D_arg0 = False,
+                    expect_1D_arg1 = False):
     arg0_name, arg1_name = name_pair
     if not _is_np_ndarray(arg0):
         raise TypeError(
@@ -18,16 +20,28 @@ def _check_ray_args(arg0, arg1, name_pair, expect_1D_arg1 = False):
     elif not _is_np_ndarray(arg1):
         raise TypeError(
             f"{arg1_name} must be a np.ndarray, not '{type(arg1).__name__}'")
-    elif arg0.ndim != 2:
-        raise ValueError(f"{arg0_name} must have 2 dims, not {arg0.ndim}")
-    elif arg0.shape[0] < 1:
-        raise RuntimeError("not clear how this situation could occur")
-    elif arg0.shape[1] != 3:
+    elif arg0.shape[-1] != 3:
         raise ValueError(f"{arg0_name}'s shape, {arg0.shape}, is invalid. "
-                         "The second element must be 3")
-    elif expect_1D_arg1 and (arg1.shape != (3,)):
-        raise ValueError(f"{arg1_name}'s shape must be (3,), not {arg1.shape}")
-    elif (not expect_1D_arg1) and (arg1.shape != arg0.shape):
+                         "The last element must be 3")
+    elif arg1.shape[-1] != 3:
+        raise ValueError(f"{arg1_name}'s shape, {arg1.shape}, is invalid. "
+                         "The last element must be 3")
+    elif (any(e < 1 for e in arg0.shape[:-1]) or
+          any(e < 1 for e in arg1.shape[:-1])):
+        raise RuntimeError("not clear how this situation could occur")
+
+    if expect_3D_arg0 and arg0.ndim != 3:
+        raise ValueError(f"{arg0_name} must have 3 dims, not {arg0.ndim}")
+    elif (not expect_3D_arg0) and (arg0.ndim != 2):
+        raise ValueError(f"{arg0_name} must have 2 dims, not {arg0.ndim}")
+
+    if expect_1D_arg1 and (arg1.ndim != 1):
+        raise ValueError(f"{arg1_name} must have 1 dim, not {arg1.ndim}")
+    elif (not expect_1D_arg1) and (arg1.ndim !=2):
+        raise ValueError(f"{arg1_name} must have 2 dims, not {arg1.ndim}")
+
+    if ((not expect_3D_arg0) and (not expect_1D_arg1) and
+        (arg1.shape != arg0.shape)):
         raise ValueError(f"{arg0_name} and {arg1_name} have a shape mismatch, "
                          f"{arg0.shape} and {arg1.shape}")
 
@@ -58,8 +72,7 @@ class ConcreteRayList:
     def __init__(self, ray_start_codeLen, ray_vec):
 
         _check_ray_args(ray_start_codeLen, ray_vec,
-                        ("ray_start_codeLen", "ray_vec"),
-                        expect_1D_arg1 = False)
+                        ("ray_start_codeLen", "ray_vec"))
 
         self.ray_start_codeLen = ray_start_codeLen
         self._ray_vec = ray_vec
@@ -72,8 +85,7 @@ class ConcreteRayList:
     @classmethod
     def from_start_stop(cls, ray_start_codeLen, ray_stop_codeLen):
         _check_ray_args(ray_start_codeLen, ray_stop_codeLen,
-                        ("ray_start_codeLen", "ray_stop_codeLen"),
-                        expect_1D_arg1 = False)
+                        ("ray_start_codeLen", "ray_stop_codeLen"))
         return cls(ray_start_codeLen = ray_start_codeLen,
                    ray_vec = ray_stop_codeLen - ray_start_codeLen)
 
@@ -104,24 +116,32 @@ class ConcreteRayList:
         return ray_start, ray_uvec
 
 
-class PerspectiveRayCollection:
+class PerspectiveRayGrid2D:
     def __init__(self, ray_start_codeLen, ray_stop_codeLen):
         _check_ray_args(ray_stop_codeLen, ray_start_codeLen,
                         ("ray_stop_codeLen", "ray_start_codeLen"),
+                        expect_3D_arg0 = True,
                         expect_1D_arg1 = True)
         self.ray_start_codeLen = ray_start_codeLen
         self.ray_stop_codeLen = ray_stop_codeLen
 
-    def __len__(self):
-        return self.ray_stop_codeLen.shape[0]
+        self._ray_stop_2D = self.ray_stop_codeLen.view()
+        self._ray_stop_2D.shape = (-1,3)
+        assert self._ray_stop_2D.flags['C_CONTIGUOUS']
+
+    def shape(self):
+        return self.ray_stop_codeLen.shape[:-1]
 
     def as_concrete_ray_list(self):
         # TODO: consider trying out np.broadcast_to to attempt to reduce space
         #       (while the result won't be contiguous along axis 0, it should
         #       still be contiguous along axis 1)
+
+        num_list_entries = self._ray_stop_2D.shape[0]
+        
         return ConcreteRayList.from_start_stop(
-            np.tile(self.ray_start_codeLen, (len(self), 1)),
-            self.ray_stop_codeLen
+            np.tile(self.ray_start_codeLen, (num_list_entries, 1)),
+            self._ray_stop_2D
         )
 
 """

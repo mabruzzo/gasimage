@@ -19,7 +19,7 @@ import gc
 
 from ._ray_intersections_cy import ray_box_intersections, traverse_grid
 from .generate_ray_spectrum import generate_ray_spectrum
-from .ray_collection import ConcreteRayList, PerspectiveRayCollection
+from .ray_collection import ConcreteRayList, PerspectiveRayGrid2D
 from .utils.misc import _has_consistent_dims
 
 class Worker:
@@ -278,11 +278,8 @@ def optically_thin_ppv(v_channels, ray_start, ray_stop, ds,
 
         # create the iterator
         assert ray_stop.shape[-1] == 3
-        ray_stop_2D = ray_stop.view()
-        ray_stop_2D.shape = (-1,3)
-        assert ray_stop_2D.flags['C_CONTIGUOUS']
 
-        _ray_collection = PerspectiveRayCollection(ray_start, ray_stop_2D)
+        _ray_collection = PerspectiveRayGrid2D(ray_start, ray_stop)
         ray_list = _ray_collection.as_concrete_ray_list()
 
         print('Constructing RayGridAssignments')
