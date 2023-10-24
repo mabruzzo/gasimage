@@ -11,6 +11,8 @@ The underlying design can be extended to other regimes.
 ************
 Quick Links:
 ************
+- `Tutorial Jupyter notebook </misc/BasicTutorial.ipynb>`_
+
 - `Overview & Installation </doc/source/testing.rst>`_
 
 - `Caveats, Concerns, & Other Considerations <doc/source/considerations.rst>`_

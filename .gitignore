@@ -4,6 +4,7 @@ __pycache__/
 build/
 *.ipynb_checkpoints/
 *.so
+*.fits
 
 # our convention is to cython files *_cy.pyx so we can be sure to ignore any
 # generated c/cpp files
