@@ -37,7 +37,7 @@ def line_profile(obs_freq, doppler_v_width, rest_freq,
 
     return norm*np.exp(exponent.to('dimensionless').v)
 
-def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI,
+def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI_n1state,
                               doppler_v_width, dz, rest_freq,
                               A10 = 2.85e-15*unyt.Hz,
                               only_spontaneous_emission = True,
@@ -67,7 +67,7 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI,
         Array of frequencies to perform radiative transfer at.
     velocities
         Velocities of the gas in cells along the ray
-    ndens_HI
+    ndens_HI_n1state
         The number density of neutral hydrogen in cells along the ray
     doppler_v_width
         The doppler width of the gas in cells along the ray
@@ -117,7 +117,7 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI,
         # - for 21cm transition, g1 = 3 and g0 = 1 
         # - since n0 and n1 are the only states, n0 + n1 == ndens
         # -> Putting these together: n1/3 + n1 == ndens OR 4*n1/3 == ndens
-        n1 = 0.75*ndens_HI # need spin temperature to be more exact
+        n1 = 0.75 * ndens_HI_n1state
 
         # compute the line-profile
         profiles = line_profile(obs_freq = obs_freq,
@@ -147,7 +147,8 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI,
         raise RuntimeError("This branch is untested (& it needs T_spin)")
         return _generate_general_spectrum(
             T_spin = None, # = 100.0*unyt.K
-            obs_freq = obs_freq, velocities = velocities, ndens_HI = ndens_HI,
+            obs_freq = obs_freq, velocities = velocities,
+            ndens_HI_n1state = ndens_HI_n1state,
             doppler_v_width = doppler_v_width, dz = dz, rest_freq = rest_freq,
             A10 = A10,
             level_pops_from_stat_weights = evel_pops_from_stat_weights
@@ -172,12 +173,17 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                           cell_width, grid_shape, cm_per_length_unit,
                           ray_start, ray_uvec,
                           rest_freq, obs_freq, doppler_v_width = None,
-                          ndens_HI_field = ('gas', 'H_p0_number_density'),
+                          ndens_HI_n1state_field = ('gas',
+                                                    'H_p0_number_density'),
                           use_cython_gen_spec = False,
                           out = None):
 
-    # do NOT use grid to access length-scale information. This will really mess
-    # some things up related to rescale_length_factor
+    # By default, ``ndens_HI_n1state_field`` is set to the yt-field specifying
+    # the number density of all neutral Hydrogen. See the docstring of
+    # optically_thin_ppv for further discussion about this approximation
+
+    # do NOT use ``grid`` to access length-scale information. This will really
+    # mess some things up related to rescale_length_factor
 
     if out is not None:
         assert out.shape == obs_freq.shape
@@ -230,7 +236,7 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
         else:
             cur_doppler_v_width = doppler_v_width.to('cm/s')
 
-        ndens_HI = grid[ndens_HI_field][idx].to('cm**-3')
+        ndens_HI_n1state = grid[ndens_HI_n1state_field][idx].to('cm**-3')
 
         if use_cython_gen_spec:
             # There were bugs in this version of the method
@@ -241,7 +247,7 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
             _generate_ray_spectrum_cy(
                 obs_freq = obs_freq.ndarray_view(),
                 velocities = vlos.ndarray_view(),
-                ndens_HI = ndens_HI.ndarray_view(),
+                ndens_HI_n1state = ndens_HI_n1state.ndarray_view(),
                 doppler_v_width = cur_doppler_v_width.ndarray_view(), 
                 rest_freq = float(rest_freq.v),
                 dz = dz.ndarray_view(),
@@ -249,7 +255,7 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
         else:
             out[:] = _generate_ray_spectrum_py(
                 obs_freq = obs_freq, velocities = vlos, 
-                ndens_HI = grid[ndens_HI_field][idx],
+                ndens_HI_n1state = grid[ndens_HI_n1state_field][idx],
                 doppler_v_width = cur_doppler_v_width, 
                 rest_freq = spin_flip_props.freq_quantity,
                 dz = dz,
@@ -266,7 +272,7 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
 # would also take some work to parallelize...
 # ==========================================================================
 
-def _generate_general_spectrum(T_spin, obs_freq, velocities, ndens_HI,
+def _generate_general_spectrum(T_spin, obs_freq, velocities, ndens_HI_n1state,
                                doppler_v_width, dz, rest_freq,
                                A10 = 2.85e-15*unyt.Hz,
                                level_pops_from_stat_weights = True):
@@ -276,9 +282,9 @@ def _generate_general_spectrum(T_spin, obs_freq, velocities, ndens_HI,
     if not level_pops_from_statistical_weights:
         exp_term = np.exp((-unyt.h_cgs * rest_freq /
                            (unyt.kboltz_cgs * Tspin)).to('dimensionless').v)
-    n0 = ndens_HI / ( 1 + g1_div_g0 * exp_term)
+    n0 = ndens_HI_n1state / ( 1 + g1_div_g0 * exp_term)
 
-    n1 = ndens_HI - n0
+    n1 = ndens_HI_n1state - n0
     B10 = 0.5 * A10 * unyt.c_cgs**2 / (unyt.h_cgs * rest_freq**3)
     B01 = g1_div_g0 * B10
 

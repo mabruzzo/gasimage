@@ -23,6 +23,7 @@ from .ray_collection import ConcreteRayList
 from .utils.misc import _has_consistent_dims
 
 class Worker:
+    #TODO: document why this class exists!
     def __init__(self, ds_initializer, obs_freq, length_unit_name,
                  rescale_length_factor, generate_ray_spectrum_kwargs):
         assert np.ndim(obs_freq) == 1
@@ -185,7 +186,7 @@ class RayGridAssignments:
 
 
 def optically_thin_ppv(v_channels, ray_collection, ds,
-                       ndens_HI_field = ('gas', 'H_p0_number_density'),
+                       ndens_HI_n1state = ('gas', 'H_p0_number_density'),
                        doppler_v_width = None,
                        use_cython_gen_spec = False,
                        rescale_length_factor = None,
@@ -207,8 +208,11 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
         image is constructed. If ds is the dataset, itself, this function
         cannot be parallelized (due to issues with pickling). Currently, the 
         dataset must be unigrid.
-    ndens_HI_field
-        The name of the field holding the number density of H I atoms
+    ndens_HI_n1state: 2-tuple of strings
+        The name of the yt-field holding the number density of H I atoms
+        (neutral Hydrogen) in the electronic ground state (i.e. the electron is
+        in the n=1 orbital). By default, this is the number density of all
+        H I atoms. This approximation is discussed below in the notes.
     doppler_v_width: `unyt.unyt_quantity`, Optional
         Optional parameter that can be used to specify the doppler width at
         every cell in the resulting image. When not specified, this is computed
@@ -227,6 +231,13 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
 
     Notes
     -----
+    By default, ``ndens_HI_n1state`` is set to the yt-field specifying the
+    number density of all neutral Hydrogen. When this field is accurate, and
+    the electron-energy level populations are in LTE, this is probably a fairly
+    decent approximation. While it may overestimate the fraction of neutral
+    Hydrogen at n=1 at higher temperatures (above a few times $10^4\, {\rm K}$),
+    most of the hydrogen should be ionized at these temperatures.
+
     We assumed that v<<c. This lets us:
     - neglect the transverse redshift
     - approximate the longitudinal redshift as freq_obs = rest_freq*(1+vel/c)
@@ -306,7 +317,7 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
                 'rest_freq' : rest_freq,
                 'cm_per_length_unit' : length_unit_quan.to('cm').v,
                 'doppler_v_width' : doppler_v_width,
-                'ndens_HI_field' : ndens_HI_field,
+                'ndens_HI_n1state_field' : ndens_HI_n1state,
                 'use_cython_gen_spec' : use_cython_gen_spec,
             }
         )

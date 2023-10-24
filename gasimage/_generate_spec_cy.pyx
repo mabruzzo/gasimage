@@ -48,7 +48,7 @@ DEF _A10 = 2.85e-15
 @cython.wraparound(False)
 def _generate_ray_spectrum_cy(const double[:] obs_freq,
                               const double[:] velocities,
-                              const double[:] ndens_HI,
+                              const double[:] ndens_HI_n1state,
                               const double[:] doppler_v_width,
                               double rest_freq,
                               const double[:] dz,
@@ -56,7 +56,7 @@ def _generate_ray_spectrum_cy(const double[:] obs_freq,
     """
     obs_freq and rest_freq should be in units should be in units of Hz
     velocities and doppler_v_width should be in units of cm/s
-    ndens_HI should be in units of cm^{-3}
+    ndens_HI_n1state should be in units of cm^{-3}
     dz should be in units of cm
     
     out should be the same size as obs_freq
@@ -73,7 +73,7 @@ def _generate_ray_spectrum_cy(const double[:] obs_freq,
     cdef LineProfileStruct prof
 
     for i in range(num_cells):
-        n1 = 0.75*ndens_HI[i]
+        n1 = 0.75*ndens_HI_n1state[i]
         cur_dz = dz[i]
         prof = prep_LineProfHelper(rest_freq, doppler_v_width[i],
                                    velocities[i])

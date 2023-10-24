@@ -14,7 +14,7 @@ def generate_image_arr(ds_initializer, v_channels, sky_delta_latitude_arr_deg,
                        sky_longitude_arr_deg, obs_distance,
                        sky_latitude_ref_deg = 0.0,
                        domain_theta_rad = np.pi/2, domain_phi_rad = 3*np.pi/2,
-                       nHI_field = ('gas', 'H_p0_number_density'),
+                       ndens_HI_n1state = ('gas', 'H_p0_number_density'),
                        rescale_length_factor = None, pool = None):
     """
     Generate a mock ppv image of a simulation using a ray-tracing radiative
@@ -63,8 +63,11 @@ def generate_image_arr(ds_initializer, v_channels, sky_delta_latitude_arr_deg,
         the x,y, and z directions align with the simulation's native coordinate
         axes (for reference, the x,y,z directions in the observer's frame are
         generally different).
-    ndens_HI_field
-        The name of the field holding the number density of H I atoms
+    ndens_HI_n1state
+        The name of the yt-field holding the number density of H I atoms
+        (neutral Hydrogen) in the electronic ground state (i.e. the electron is
+        in the n=1 orbital). See the documentation for `optically_thin_ppv` for
+        more discussion about the motivation for the default value.
     rescale_length_factor: float, Optional
         When not `None`, the width of each cell is multiplied by this factor.
         (This effectively holds the position of the simulation's origin fixed
@@ -121,7 +124,7 @@ def generate_image_arr(ds_initializer, v_channels, sky_delta_latitude_arr_deg,
     print('raycasting start time:', t1.time())
     out = optically_thin_ppv(
         v_channels, ray_collection = ray_collection, ds = ds_initializer,
-        ndens_HI_field = ('gas', 'H_p0_number_density'),
+        ndens_HI_n1state = ndens_HI_n1state,
         doppler_v_width = None,
         use_cython_gen_spec = False, # the function must be tested when True
         rescale_length_factor = rescale_length_factor,

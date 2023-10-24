@@ -1,5 +1,10 @@
 # some undocumented routines used for plotting ray-collections
 
+import numpy as np
+import yt
+
+from .ray_utils import ray_start_stop
+
 def _determine_axes_bounds(prj_axis, ray_start, axes_unit, ds,
                            pad_frac = 0.01):
     # come up with bounds for the image
@@ -137,7 +142,7 @@ def _visualize_simple_rays(ds,fig,ax,prj_axis, ray_start, ray_stop,
     
 def plot_ray_projection(ds, fig, ax, prj_axis, ray_collection, axes_unit = None,
                         full_proj = False, exclude_rays_without_intersections = True):
-    ray_start, ray_stop, has_intersection = gasimage.utils.ray_utils.ray_start_stop(
+    ray_start, ray_stop, has_intersection = ray_start_stop(
         ray_collection, code_length = None, ds = ds
     )
     my_ray_start,my_ray_stop = ray_start.reshape(-1,3), ray_stop.reshape(-1,3)

@@ -65,7 +65,7 @@ def _create_raw_ppv_and_save_fits(enzoe_sim_path, out_fname,
             sky_delta_latitude_arr_deg = sky_delta_latitude_arr_deg,
             sky_longitude_arr_deg = sky_longitude_arr_deg,
             obs_distance = obs_distance, v_channels = v_channels,
-            nHI_field = ('gas', 'H_p0_number_density'),
+            ndens_HI_n1state = ('gas', 'H_p0_number_density'),
             rescale_length_factor = 1,
             pool = pool
         )
