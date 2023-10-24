@@ -202,12 +202,12 @@ class PerspectiveRayGrid2D:
 
 
 
-def perspective_ray_grid(ds, sky_latitude_ref_deg, observer_distance,
+def perspective_ray_grid(sky_latitude_ref_deg, observer_distance,
                          sky_delta_latitude_arr_deg,
                          sky_longitude_arr_deg,
                          domain_theta_rad,
                          domain_phi_rad,
-                         rescale_length_factor = None):
+                         *, ds, rescale_length_factor = None):
     """
     Construct a regularly spaced 2d grid of rays that all trace back to a 
     single observer.
@@ -218,8 +218,6 @@ def perspective_ray_grid(ds, sky_latitude_ref_deg, observer_distance,
 
     Parameters
     ----------
-    ds
-        The simulation from which the output coordinate system is taken.
     sky_delta_latitude_arr_deg: 1D np.ndarray
         Array of sky-latitude locations (in degrees), where rays should be 
         traced. These are measured with respect to the sky-latitude of the ray
@@ -248,6 +246,9 @@ def perspective_ray_grid(ds, sky_latitude_ref_deg, observer_distance,
         the x,y, and z directions align with the simulation's native coordinate
         axes (for reference, the x,y,z directions in the observer's frame are
         generally different).
+    ds
+        The simulation from which the output coordinate system is taken. In
+        the near future, this will no longer be necessary.
     rescale_length_factor: float, Optional
         When not `None`, the width of each cell is multiplied by this factor.
         (This effectively holds the position of the simulation's origin fixed
@@ -345,9 +346,9 @@ def _build_2D_grid_of_3D_points(x_vals, y_vals, z_vals, unit_choice = None):
 
 
 
-def parallel_ray_grid(ds, delta_im_x, delta_im_y,
+def parallel_ray_grid(delta_im_x, delta_im_y,
                       domain_theta_rad, domain_phi_rad,
-                      observer_distance = None):
+                      *, ds, observer_distance = None):
     """
     Construct a collection of rays that are all parallel to each other.
 
@@ -367,8 +368,6 @@ def parallel_ray_grid(ds, delta_im_x, delta_im_y,
 
     Parameters
     ----------
-    ds
-        The simulation from which the output coordinate system is taken.
     delta_im_x, delta_im_y: `unyt.unyt_array`
         1D arrays of x and y positions that specify where rays should be 
         traced. 
@@ -377,6 +376,9 @@ def parallel_ray_grid(ds, delta_im_x, delta_im_y,
         These quantities specify the location of the observer in spherical 
         coordinates relative to the reference point (which is currently assumed
         to coincide with the origin of the simulation domain).
+    ds
+        The simulation from which the output coordinate system is taken. In
+        the near future, this will no longer be necessary.
     observer_distance : ``unyt.unyt_quantity``, optional
         Distance between the observer and the reference point (which currently 
         coincides with the origin of the simulation domain). This is only

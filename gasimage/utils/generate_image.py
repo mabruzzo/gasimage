@@ -110,13 +110,13 @@ def generate_image_arr(ds_initializer, v_channels, sky_delta_latitude_arr_deg,
 
     # determine the starting and ending points of all rays
     ray_collection = perspective_ray_grid(
-        ds = _ds, sky_latitude_ref_deg = sky_latitude_ref_deg,
+        sky_latitude_ref_deg = sky_latitude_ref_deg,
         observer_distance = obs_distance,
         sky_delta_latitude_arr_deg = sky_delta_latitude_arr_deg,
         sky_longitude_arr_deg = sky_longitude_arr_deg,
         domain_theta_rad = domain_theta_rad,
         domain_phi_rad = domain_phi_rad,
-        rescale_length_factor = rescale_length_factor
+        ds = _ds, rescale_length_factor = rescale_length_factor
     )
 
     out = optically_thin_ppv(
