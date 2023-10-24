@@ -2,15 +2,13 @@ import numpy as np
 import unyt
 import yt
 
-from gasimage.ray_collection import build_perspective_grid
-from gasimage.ray_creation import \
-    transform_ray_end_points, _find_obs_ray_end_points
+from gasimage.ray_collection import perspective_ray_grid
 from gasimage.optically_thin_ppv import optically_thin_ppv
 
 
 # this is mostly for testing-purposes!
-# - in the future, I want to rewrite things so we don't need to worry as much
-#   about tying things together.
+# - a lot of recent refactoring will hopefully have made this function a lot
+#   less necessary
 
 def generate_image_arr(ds_initializer, v_channels, sky_delta_latitude_arr_deg,
                        sky_longitude_arr_deg, obs_distance,
@@ -109,7 +107,7 @@ def generate_image_arr(ds_initializer, v_channels, sky_delta_latitude_arr_deg,
         assert rescale_length_factor > 0 and np.ndim(rescale_length_factor) == 0
 
     # determine the starting and ending points of all rays
-    ray_collection = build_perspective_grid(
+    ray_collection = perspective_ray_grid(
         ds = _ds, sky_latitude_ref_deg = sky_latitude_ref_deg,
         observer_distance = obs_distance,
         sky_delta_latitude_arr_deg = sky_delta_latitude_arr_deg,

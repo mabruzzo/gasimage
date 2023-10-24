@@ -1,5 +1,10 @@
 import numpy as np
 import unyt
+from .utils.misc import check_consistent_arg_dims
+
+def _magnitude(vec): # handles unyt.unyt_array better than np.linalg
+    assert vec.ndim == 1
+    return np.sqrt(vec*vec).sum()
 
 def _dot(matrix,vector):
     # to do, replace this with an actual numpy function
@@ -163,23 +168,22 @@ def _find_obs_ray_end_points(ds, sky_latitude_ref_deg,
                                            phi_rad = sky_phi_arr)
 
 
-def transform_ray_end_points(ds, ray_end_points,
-                             observer_distance,
-                             sky_latitude_ref_deg,
-                             domain_reference_point,
-                             domain_theta_rad,
-                             domain_phi_rad):
+def convert_observer_to_domain_points(points_to_transform,
+                                      observer_distance,
+                                      sky_latitude_ref_deg,
+                                      domain_reference_point,
+                                      domain_theta_rad,
+                                      domain_phi_rad):
     """
-    Convert the ray end points from the observer's coordinate system
-    to the domain's coordinate system.
+    Convert the points from the observer's coordinate system to the domain's
+    coordinate system.
+
+    Each vector should be ordered (x,y,z)
 
     Parameters
     ----------
-    ds
-        The simulation from which the output coordinate system is taken.
-    ray_end_points: np.ndarray
-        Array of N 3D vectors, with shape (N,3) which represents the endpoints
-        of the rays. These values are transformed.
+    points_to_transform: np.ndarray
+        Array of N 3D vectors, with shape (N,3) to be transformed.
     observer_distance: unyt.unyt_quantity
         Distance of the observer from the reference point.
     sky_latitude_ref_deg: float
@@ -195,6 +199,13 @@ def transform_ray_end_points(ds, ray_end_points,
     domain_theta_rad, domain_phi_rad: float
         Spherical coordinates of the observer relative to the reference point.
 
+    Returns
+    -------
+    converted_ray_origin
+        The observer's position in the domain's coordinate system
+    converted_points
+        The converted points
+
     Notes
     -----
     A signficant amount of time elapsed between writing this function and adding
@@ -209,7 +220,16 @@ def transform_ray_end_points(ds, ray_end_points,
     Make this a class that can perform forward and reverse transformations
     """
 
-    assert ds.coordinates.axis_order == ('x', 'y', 'z')
+    check_consistent_arg_dims(points_to_transform, unyt.dimensions.length,
+                              "points_to_transform")
+    check_consistent_arg_dims(observer_distance, unyt.dimensions.length,
+                              "observer_distance")
+    check_consistent_arg_dims(domain_reference_point, unyt.dimensions.length,
+                              "domain_reference_point")
+
+    # this function was originally just written to transform the end points of
+    # rays. But, it can be used to transform arbitrary points.
+    ray_end_points = points_to_transform
 
     # in the observer's frame, get cartesian position of ref point
     sky_theta_ref = np.deg2rad(90.0 - sky_latitude_ref_deg)
@@ -260,33 +280,3 @@ def transform_ray_end_points(ds, ray_end_points,
     if ray_end_points.shape != (3,):
         converted_ray_end_points.shape = ray_end_points.shape
     return converted_ray_origin, converted_ray_end_points
-
-"""
-def _build_rays(ds, ray_end_points,
-                observer_distance,
-                sky_latitude_ref_deg,
-                domain_reference_point,
-                domain_theta_rad,
-                domain_phi_rad):
-    converted_ray_origin, converted_ray_end_points \
-        = transform_ray_end_points(ds, ray_end_points,
-                                   observer_distance,
-                                   sky_latitude_ref_deg,
-                                   domain_reference_point,
-                                   domain_theta_rad,
-                                   domain_phi_rad)
-    if converted_ray_end_points.shape == (3,):
-        return ds.ray(converted_ray_origin,
-                      converted_ray_end_points)
-    temp = np.empty(shape = converted_ray_end_points.shape[:-1],
-                   dtype = np.object)
-    flat = temp.flatten()
-    end_points_view = converted_ray_end_points.view()
-    end_points_view.shape = (-1,3)
-
-    for i in range(end_points_view.shape[0]):
-        flat[i] = ds.ray(converted_ray_origin,
-                         end_points_view[i,:])
-    flat.shape = temp.shape
-    return flat
-"""

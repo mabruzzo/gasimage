@@ -14,3 +14,8 @@ def _has_consistent_dims(quantity, dims):
             return True
         return quantity.units.dimensions == dims
     return dims == _dimensionless
+
+def check_consistent_arg_dims(quantity, dims, arg_name):
+    if not _has_consistent_dims(quantity, dims):
+        raise ValueError(f"the {arg_name} argument, {quantity} doesn't match "
+                         f"the expected dimensionality of {dims}")
