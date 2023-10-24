@@ -6,6 +6,8 @@ from gasimage.optically_thin_ppv import (
     optically_thin_ppv,
 )
 
-from gasimage.ray_collection import parallel_ray_grid perspective_ray_grid
+from gasimage.snapdsinit import SnapDatasetInitializer
+
+from gasimage.ray_collection import parallel_ray_grid, perspective_ray_grid
 
 from gasimage.rt_config import default_spin_flip_props

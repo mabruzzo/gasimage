@@ -3,7 +3,7 @@ import unyt
 
 from .._ray_intersections_cy import ray_box_intersections
 
-def ray_start_stop(ray_collection, 
+def ray_start_stop(ray_collection, omit_intersectionless = False,
                    code_length = None, **kw):
     """
     Returns the start and end points of all rays in the collection 
@@ -11,22 +11,38 @@ def ray_start_stop(ray_collection,
 
     Kwargs
     ------
-    This can accept the `'left_edge'`, `'right_edge'` kwargs, which are 
-    `(3,)` `unyt.unyt_array` instances. Alternatively  the user can specify a
-    `ds` object (a yt-dataset returned by `yt.load`).
+    ray_collection:
+        A collection of rays. This should be an instance of one of the classes
+        defined in this package
+    omit_intersectionless: bool, Optional
+        When False (the default) information for all rays is returned and a
+        mask is provided to specify which rays never intersect the grid. 
+        Otherwise
+    code_length
+        The code-length of then simulation. All intersection calculations are
+        performed in these units.
+    left_edge, right_edge: `unyt.unyt_array`, Optional
+        `(3,)`  instances specifying the left and right edges of the simulation
+        domain. Both MUST be specified when the `ds` kwarg is specified. If the
+        `ds` argument is specified, both must be None
+    ds: `yt.data_objects.static_output.Dataset`, Optional
+        A yt-dataset returned by `yt.load`. If this is None, then neither
+        `left_edge` nor `right_edge` must be specified.
 
     TODO: address this hacky solution
 
     Returns
     -------
     ray_start, ray_stop: `unyt.unyt_array
-        Each object has the shape given by `ray_collection.shape + (3,)`,
-        where `arr[...,0]`, `arr[...,1]`, and `arr[...,2]` specify x,y,z
-        vals respectively
-    w_no_intersection: np.ndarray
-        An array of shape ray_start.shape[:-1] that holds a value of True for
+        The length of both arrays along the last axis is 3, In each case,
+        `arr[...,0]`, `arr[...,1]`, and `arr[...,2]` specify x,y,z vals 
+        respectively. When `omit_intersectionless` is True, these are 2D 
+        arrays. Otherwise, the shape is given by `ray_collection.shape + (3,)`.
+    has_intersection: np.ndarray
+        An array of shape ray_start.shape[:-1] that holds a value of False for
         all rays that don't intersect with the grid. The only use case for
-        ray_stop in these cases is for making pretty pictures.
+        ray_stop in these cases is for making pretty pictures. Only returned
+        when `omit_intersectionless` is False.
     """
     if ((len(kw) == 2) and 
         all(e in kw for e in ['left_edge','right_edge'])):
@@ -77,9 +93,12 @@ def ray_start_stop(ray_collection,
 
     ray_start = unyt.unyt_array(ray_start, code_length)
     ray_stop = unyt.unyt_array(ray_stop, code_length)
-    if len(ray_collection.shape) > 1:
-        new_shape = ray_collection.shape + (3,)
-        ray_start.shape = new_shape
-        ray_stop.shape = new_shape
-        has_intersection.shape = new_shape[:-1]
-    return ray_start, ray_stop, has_intersection
+
+    if omit_intersectionless:
+        return ray_start[has_intersection], ray_stop[has_intersection]
+    else:
+        out_shape = ray_collection.shape + (3,)
+        ray_start.shape = out_shape
+        ray_stop.shape = out_shape
+        has_intersection.shape = out_shape[:-1]
+        return ray_start, ray_stop, has_intersection

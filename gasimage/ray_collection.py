@@ -314,7 +314,7 @@ class ParallelRayGrid2D:
         for i in range(_ray_start_2D.shape[0]):
             cur_ray_start = _ray_start_2D[i,:]
             if np.logical_and(cur_ray_start >= left,
-                              cur_rat_start <= right).all():
+                              cur_ray_start <= right).all():
                 raise RuntimeError('We can potentially relax this in the '
                                    'future.')
 

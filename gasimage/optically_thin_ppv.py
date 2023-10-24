@@ -388,7 +388,7 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
 
     # the bulk of the work occurs here:
     _tstart = datetime.datetime.now()
-    print('begin raycasting -- start time: {_tstart.time()}')
+    print(f'begin raycasting -- start time: {_tstart.time()}')
 
     for elem in pool.map(worker, generator(), callback = callback):
         continue
