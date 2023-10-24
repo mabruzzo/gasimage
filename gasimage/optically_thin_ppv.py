@@ -1,3 +1,4 @@
+import datetime
 from typing import Dict, List, Set, Tuple
 
 import numpy as np
@@ -23,7 +24,32 @@ from .ray_collection import ConcreteRayList
 from .utils.misc import _has_consistent_dims
 
 class Worker:
-    #TODO: document why this class exists!
+    """
+    This does most of the ray-casting heavy lifting.
+
+    Essentially, the constructor takes in a bunch of configuration. Then the
+    __call__ is invoked directing the program to perform raytracing for a
+    subset of rays through a particular region of space. The result is then
+    returned and the caller ultimately stiches the result back together.
+
+    In more detail, this class exists for the sake of facillitating
+    parallelization using a worker-pool.
+    - when calling a worker-pool, the managing process specifies a function
+      that needs to be executed and provides an iterable of arguments that
+      should be passed to that function. The pool first sends the function to
+      each of the worker (serialization is done via pickle). Then the pool
+      passes arguments to each worker, executes the function with the argument
+      and then sends the results back to the primary process.
+    - in principle, the ray-casting could all be accomplished with a normal
+      function, by adding more arguments to the function. Since a lot of the
+      arguments wouldn't change between function calls, we would be wasting a
+      bunch of time serializing/unserializing those arguments.
+    - Thus, we define this class instead of a function that stores those
+      unchanging arguments. We effectively cache these unchanging arguments.
+
+    TODO: improve this documentation
+    TODO: explain somewhat roundabout handling of ds_initializer
+    """
     def __init__(self, ds_initializer, obs_freq, length_unit_name,
                  rescale_length_factor, generate_ray_spectrum_kwargs):
         assert np.ndim(obs_freq) == 1
@@ -187,10 +213,8 @@ class RayGridAssignments:
 
 def optically_thin_ppv(v_channels, ray_collection, ds,
                        ndens_HI_n1state = ('gas', 'H_p0_number_density'),
-                       doppler_v_width = None,
-                       use_cython_gen_spec = False,
-                       rescale_length_factor = None,
-                       pool = None):
+                       *, doppler_v_width = None, use_cython_gen_spec = False,
+                       rescale_length_factor = None, pool = None):
     """
     Generate a mock ppv image (position-position-velocity image) of a
     simulation using a ray-tracing radiative transfer algorithm that assumes 
@@ -259,7 +283,14 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
 
     is_mpi_root_proc = (not hasattr(pool,'is_master')) or pool.is_master()
 
+    # use the code units (since the cell widths are usually better behaved)
+
+    # do a bunch of setup!
     if is_mpi_root_proc:
+        # this branch is always executed by the root process driving the
+        # program. (It's only not called by non-root processes if the user is
+        # using mpi -- mpi suport still needs to be tested)
+
         # now get an instance of the dataset
         if isinstance(ds, yt.data_objects.static_output.Dataset):
             if not isinstance(pool, schwimmbad.SerialPool):
@@ -321,7 +352,6 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
                 'use_cython_gen_spec' : use_cython_gen_spec,
             }
         )
-        
 
         # create the output array and callback function
         out_shape = (v_channels.size,) + ray_collection.shape
@@ -344,16 +374,31 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
             for i,ray_ind in enumerate(ray_idx):
                 out_2D[:,ray_ind] += ray_spectra[i,:]
     else:
+        # this branch is almost never executed. The one exception is when the
+        # program is executed using an mpi-pool. In that case all non-root
+        # processes execute this path (they essentially do nothing...). Those
+        # processes should receive all of the information they need to do the
+        # work through the pool (just like processes in multiprocessing.Pool.
+        #
+        # NOTE: mpi suport still needs to be tested
         generator = None
         worker = None
         callback = None
         out = None
 
-    print('begin processing')
+    # the bulk of the work occurs here:
+    _tstart = datetime.datetime.now()
+    print('begin raycasting -- start time: {_tstart.time()}')
+
     for elem in pool.map(worker, generator(), callback = callback):
         continue
-    print('finished processing')
 
+    _tend = datetime.datetime.now()
+    print('finished raycasting\n'
+          f'-> start, end time: {_tstart.time()}, {_tend.time()}\n'
+          f'-> elapsed time: {_tend - _tstart}')
+
+    # attach units and massage the output shape
     out_units = 'erg/(cm**2 * Hz * s * steradian)'
     if len(ray_collection.shape) == 1:
         assert out_2D.shape == (v_channels.size, 1)

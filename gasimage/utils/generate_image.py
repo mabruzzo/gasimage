@@ -87,7 +87,6 @@ def generate_image_arr(ds_initializer, v_channels, sky_delta_latitude_arr_deg,
     `rescale_length_factor` is provided for rescaling the sizes of adiabatic
     simulations (since they are scale-free).
     """
-    import datetime
     # produce a mock image (not initially in terms of brightness temperature)
     if isinstance(ds_initializer, yt.data_objects.static_output.Dataset):
         _ds = ds_initializer
@@ -120,8 +119,6 @@ def generate_image_arr(ds_initializer, v_channels, sky_delta_latitude_arr_deg,
         rescale_length_factor = rescale_length_factor
     )
 
-    t1 = datetime.datetime.now()
-    print('raycasting start time:', t1.time())
     out = optically_thin_ppv(
         v_channels, ray_collection = ray_collection, ds = ds_initializer,
         ndens_HI_n1state = ndens_HI_n1state,
@@ -130,8 +127,4 @@ def generate_image_arr(ds_initializer, v_channels, sky_delta_latitude_arr_deg,
         rescale_length_factor = rescale_length_factor,
         pool = pool
     )
-    t2 = datetime.datetime.now()
-    print('raycasting start time:', t1.time())
-    print('raycasting end time:', t2.time())
-    print('raycasting elapsed time:', t2 - t1)
     return out
