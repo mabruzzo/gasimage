@@ -76,6 +76,15 @@ class ConcreteRayList:
       unit vector. But if you do the normalization on the unit vector, then you
       can wind up with slightly different values. Functionally, this shouldn't
       change things, but it could complicate testing...
+
+    TODO
+    ----
+    we should move away from assuming that the ray_start values in this class
+    have units of 'code_length'. This introduces some headaches.
+    - In the long-term, it may be useful to keep this pickleable, so we should
+      probably not store a unyt object directly inside this class (at least,
+      we don't want a unyt object depending on sim-specific units). Maybe we
+      should just store the name of the units.
     """
 
     def __init__(self, ray_start_codeLen, ray_vec):
@@ -278,6 +287,12 @@ def perspective_ray_grid(sky_latitude_ref_deg, observer_distance,
 
 
 class ParallelRayGrid2D:
+    # in this class, positioning of ray_start is not actually all that
+    # important. Neglecting numerical effects, moving the ray_start
+    # closer/further from the domain shouldn't have any practical effect...
+    #
+    # Maybe we should add a flag encoding whether the user really values the
+    # ray_start values...
     def __init__(self, ray_start, ray_vec):
         _check_ray_args(ray_start, ray_vec, ("ray_start", "ray_vec"),
                         expect_3D_arg0 = True, expect_1D_arg1 = True,
