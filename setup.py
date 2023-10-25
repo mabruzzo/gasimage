@@ -27,9 +27,14 @@ ext_modules = [
 for e in ext_modules:
     e.cython_directives = {'language_level': "3"}
 
+# TODO:
+# - fetch version number from __init__.py to make sure it remains consistent.
+# - Maybe follow instructions from: https://packaging.python.org/en/latest/guides/single-sourcing-package-version/#single-sourcing-the-package-version
+VERSION = "0.1.0"
+
 setup(
     name='gasimage',
-    version='0.0.1',
+    version=VERSION,
     description='Toolkit for creating mock HI images.',
     author='Matthew Abruzzo',
     author_email='matthewabruzzo@gmail.com',

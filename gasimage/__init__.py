@@ -1,3 +1,5 @@
+__version__ = "0.1.0"
+
 # do some setup so that the user doesn't need to know how modules and
 # datastructures are organized within this package
 
