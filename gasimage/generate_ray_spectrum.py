@@ -8,17 +8,42 @@ from .utils.misc import _has_consistent_dims
 
 _inv_sqrt_pi = 1.0/np.sqrt(np.pi)
 
-def line_profile(obs_freq, doppler_v_width, rest_freq,
+def line_profile(rest_freq, obs_freq, doppler_parameter_b,
                  velocity_offset = None):
-    # freq_arr is a 1D array
-    # doppler_v_width is a 1D array (it may have a different
-    # shape from freq_arr)
-    # rest_freq is a scalar
+    """
+    Evaluates the line profile, assuming that Doppler broadening is the only
+    source of broadening, for each specified observed frequencies and for each
+    set of specified gas-properties.
+
+    Parameters
+    ----------
+    rest_freq: `unyt.unyt_quantity`
+        Specifies the rest-frame frequency of the transition.
+    obs_freq: `unyt.unyt_array`, (n,)
+        An array of frequencies to evaluate the line profile at.
+    doppler_parameter_b: `unyt.unyt_array`, shape(m,)
+        Array of values for the Doppler parameter (aka Doppler broadening
+        parameter) for each of the gas cells that the line_profile is
+        evaluated for. This quantity is commonly represented by the variable
+        ``b`` and has units consistent with velocity. ``b/sqrt(2)`` specifies
+        the standard deviation of the line-of-sight velocity component. When
+        this quantity is multiplied by ``rest_freq/unyt.c_cgs``, you get what
+        Rybicki and Lightman call the "Doppler width". This alternative
+        quantity divided by ``sqrt(2)`` gives the standard deviation of the
+        frequency profile.
+    velocity_offset: `unyt.unyt_array`, shape(m,), optional
+        Array of line-of-sight velocities for each of the gas cells that the
+        line_profile is evaluated for. When omitted, this is assumed to have a
+        value of zero.
+
+    Returns
+    -------
+    out: ndarray, shape(n,m)
+       Holds the results of the evaluated line profile.
+    """
 
     # temp is equivalent to 1./(sqrt(2) * sigma)
-    temp = (
-        unyt.c_cgs/(rest_freq*doppler_v_width)
-    )
+    temp = unyt.c_cgs / (rest_freq * doppler_parameter_b)
 
     norm = _inv_sqrt_pi * temp
     half_div_sigma2 = temp*temp
@@ -27,7 +52,7 @@ def line_profile(obs_freq, doppler_v_width, rest_freq,
     if velocity_offset is None:
         emit_freq = obs_freq[:,np.newaxis]
     else:
-        assert velocity_offset.shape == doppler_v_width.shape
+        assert velocity_offset.shape == doppler_parameter_b.shape
         v_div_c_plus_1 = 1 + velocity_offset/unyt.c_cgs
         emit_freq = obs_freq[:,np.newaxis]/(v_div_c_plus_1.to('dimensionless').v)
 
@@ -38,7 +63,7 @@ def line_profile(obs_freq, doppler_v_width, rest_freq,
     return norm*np.exp(exponent.to('dimensionless').v)
 
 def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI_n1state,
-                              doppler_v_width, dz, rest_freq,
+                              doppler_parameter_b, dz, rest_freq,
                               A10 = 2.85e-15*unyt.Hz,
                               only_spontaneous_emission = True,
                               level_pops_from_stat_weights = True,
@@ -69,8 +94,15 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI_n1state,
         Velocities of the gas in cells along the ray
     ndens_HI_n1state
         The number density of neutral hydrogen in cells along the ray
-    doppler_v_width
-        The doppler width of the gas in cells along the ray
+    doppler_parameter_b
+        The Doppler parameter (aka Doppler broadening parameter) of the gas in
+        cells along the ray, often abbreviated with the variable ``b``. This
+        has units consistent with velocity. ``b/sqrt(2)`` specifies the
+        standard deviation of the line-of-sight velocity component. When this
+        quantity is multiplied by ``rest_freq/unyt.c_cgs``, you get what 
+        Rybicki and Lightman call the "Doppler width". This alternative
+        quantity is a factor of ``sqrt(2)`` larger than the standard deviation
+        of the frequency profile.
     dz
         The distance travelled by the ray through each cell.
     rest_freq
@@ -120,9 +152,9 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI_n1state,
         n1 = 0.75 * ndens_HI_n1state
 
         # compute the line-profile
-        profiles = line_profile(obs_freq = obs_freq,
-                                doppler_v_width = doppler_v_width,
-                                rest_freq = rest_freq,
+        profiles = line_profile(rest_freq = rest_freq,
+                                obs_freq = obs_freq,
+                                doppler_parameter_b = doppler_parameter_b,
                                 velocity_offset = velocities)
 
         # now compute the specific (monochromatic) emission coefficient at a
@@ -149,14 +181,30 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI_n1state,
             T_spin = None, # = 100.0*unyt.K
             obs_freq = obs_freq, velocities = velocities,
             ndens_HI_n1state = ndens_HI_n1state,
-            doppler_v_width = doppler_v_width, dz = dz, rest_freq = rest_freq,
+            doppler_parameter_b = doppler_parameter_b, dz = dz, rest_freq = rest_freq,
             A10 = A10,
             level_pops_from_stat_weights = evel_pops_from_stat_weights
         )
     else:
         raise RuntimeError("support hasn't been added for this configuration")
 
-def _calc_doppler_v_width(grid,idx):
+def _calc_doppler_parameter_b(grid,idx):
+    """
+    Compute the Doppler parameter (aka Doppler broadening parameter) of the gas
+    in cells specified by the inidices idx.
+
+    Note
+    ----
+    The Doppler parameter had units consistent with velocity and is often
+    represented by the variable ``b``. ``b/sqrt(2)`` specifies the standard
+    deviation of the line-of-sight velocity component.
+
+    For a given line-transition with a rest-frame frequency ``rest_freq``,
+    ``b * rest_freq/unyt.c_cgs`` specifies what Rybicki and Lightman call the
+    "Doppler width". The "Doppler width" divided by ``sqrt(2)`` is the standard
+    deviation of the line-profile for the given transition.
+    """
+
     T_field, mmw_field = ('gas','temperature'), ('gas','mean_molecular_weight')
     T_vals, mmw_vals = grid[T_field], grid[mmw_field]
 
@@ -172,7 +220,7 @@ def _calc_doppler_v_width(grid,idx):
 def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                           cell_width, grid_shape, cm_per_length_unit,
                           ray_start, ray_uvec,
-                          rest_freq, obs_freq, doppler_v_width = None,
+                          rest_freq, obs_freq, doppler_parameter_b = None,
                           ndens_HI_n1state_field = ('gas',
                                                     'H_p0_number_density'),
                           use_cython_gen_spec = False,
@@ -230,11 +278,11 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                 ray_uvec[1] * grid[vy_field][idx] +
                 ray_uvec[2] * grid[vz_field][idx]).to('cm/s')
 
-        if doppler_v_width is None:
-            # it might be more sensible to make doppler_v_width into a field
-            cur_doppler_v_width = _calc_doppler_v_width(grid,idx).to('cm/s')
+        if doppler_parameter_b is None:
+            # it might be more sensible to make doppler_parameter_b into a field
+            cur_doppler_parameter_b = _calc_doppler_parameter_b(grid,idx).to('cm/s')
         else:
-            cur_doppler_v_width = doppler_v_width.to('cm/s')
+            cur_doppler_parameter_b = doppler_parameter_b.to('cm/s')
 
         ndens_HI_n1state = grid[ndens_HI_n1state_field][idx].to('cm**-3')
 
@@ -248,15 +296,15 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                 obs_freq = obs_freq.ndarray_view(),
                 velocities = vlos.ndarray_view(),
                 ndens_HI_n1state = ndens_HI_n1state.ndarray_view(),
-                doppler_v_width = cur_doppler_v_width.ndarray_view(), 
+                doppler_parameter_b = cur_doppler_parameter_b.ndarray_view(),
                 rest_freq = float(rest_freq.v),
                 dz = dz.ndarray_view(),
                 out = out)
         else:
             out[:] = _generate_ray_spectrum_py(
-                obs_freq = obs_freq, velocities = vlos, 
+                obs_freq = obs_freq, velocities = vlos,
                 ndens_HI_n1state = grid[ndens_HI_n1state_field][idx],
-                doppler_v_width = cur_doppler_v_width, 
+                doppler_parameter_b = cur_doppler_parameter_b,
                 rest_freq = spin_flip_props.freq_quantity,
                 dz = dz,
                 A10 = spin_flip_props.A10_quantity,
@@ -273,7 +321,7 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
 # ==========================================================================
 
 def _generate_general_spectrum(T_spin, obs_freq, velocities, ndens_HI_n1state,
-                               doppler_v_width, dz, rest_freq,
+                               doppler_parameter_b, dz, rest_freq,
                                A10 = 2.85e-15*unyt.Hz,
                                level_pops_from_stat_weights = True):
     g1_div_g0 = 3
@@ -289,7 +337,7 @@ def _generate_general_spectrum(T_spin, obs_freq, velocities, ndens_HI_n1state,
     B01 = g1_div_g0 * B10
 
     profiles = line_profile(obs_freq = obs_freq,
-                            doppler_v_width = doppler_v_width,
+                            doppler_parameter_b = doppler_parameter_b,
                             rest_freq = rest_freq,
                             velocity_offset = velocities)
     # absorption coefficient with correction for stimulated emission

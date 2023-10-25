@@ -122,7 +122,7 @@ def generate_image_arr(ds_initializer, v_channels, sky_delta_latitude_arr_deg,
     out = optically_thin_ppv(
         v_channels, ray_collection = ray_collection, ds = ds_initializer,
         ndens_HI_n1state = ndens_HI_n1state,
-        doppler_v_width = None,
+        doppler_parameter_b = None,
         use_cython_gen_spec = False, # the function must be tested when True
         rescale_length_factor = rescale_length_factor,
         pool = pool

@@ -23,9 +23,9 @@ cdef struct LineProfileStruct:
 
 @cython.cdivision(True)
 cdef inline LineProfileStruct prep_LineProfHelper(double rest_freq,
-                                                  double doppler_v_width,
+                                                  double doppler_parameter_b,
                                                   double velocity_offset) nogil:
-    cdef double temp = _C_CGS / (rest_freq * doppler_v_width)
+    cdef double temp = _C_CGS / (rest_freq * doppler_parameter_b)
 
     cdef LineProfileStruct out
     out.norm = _INV_SQRT_PI * temp
@@ -49,13 +49,13 @@ DEF _A10 = 2.85e-15
 def _generate_ray_spectrum_cy(const double[:] obs_freq,
                               const double[:] velocities,
                               const double[:] ndens_HI_n1state,
-                              const double[:] doppler_v_width,
+                              const double[:] doppler_parameter_b,
                               double rest_freq,
                               const double[:] dz,
                               double[:] out):
     """
     obs_freq and rest_freq should be in units should be in units of Hz
-    velocities and doppler_v_width should be in units of cm/s
+    velocities and doppler_parameter_b should be in units of cm/s
     ndens_HI_n1state should be in units of cm^{-3}
     dz should be in units of cm
     
@@ -75,7 +75,7 @@ def _generate_ray_spectrum_cy(const double[:] obs_freq,
     for i in range(num_cells):
         n1 = 0.75*ndens_HI_n1state[i]
         cur_dz = dz[i]
-        prof = prep_LineProfHelper(rest_freq, doppler_v_width[i],
+        prof = prep_LineProfHelper(rest_freq, doppler_parameter_b[i],
                                    velocities[i])
         for j in range(num_obs_freq):
             profile_val = eval_line_profile(obs_freq[j], rest_freq, prof)

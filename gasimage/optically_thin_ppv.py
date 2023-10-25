@@ -213,7 +213,7 @@ class RayGridAssignments:
 
 def optically_thin_ppv(v_channels, ray_collection, ds,
                        ndens_HI_n1state = ('gas', 'H_p0_number_density'),
-                       *, doppler_v_width = None, use_cython_gen_spec = False,
+                       *, doppler_parameter_b = None, use_cython_gen_spec = False,
                        rescale_length_factor = None, pool = None):
     """
     Generate a mock ppv image (position-position-velocity image) of a
@@ -237,10 +237,17 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
         (neutral Hydrogen) in the electronic ground state (i.e. the electron is
         in the n=1 orbital). By default, this is the number density of all
         H I atoms. This approximation is discussed below in the notes.
-    doppler_v_width: `unyt.unyt_quantity`, Optional
-        Optional parameter that can be used to specify the doppler width at
-        every cell in the resulting image. When not specified, this is computed
-        from the local line of sight velocity.
+    doppler_parameter_b: `unyt.unyt_quantity`, Optional
+        Optional parameter that can be used to specify the Doppler parameter
+        (aka Doppler Broadening parameter) assumed for every cell of the
+        simulation. When not specified, this is computed from the local
+        temperature (and mean-molecular-weight). To avoid any ambiguity, this
+        quantity has units consistent with velocity, this quantity is commonly
+        represented by the variable ``b``, and ``b/sqrt(2)`` specifies the
+        standard deviation of the line-of-sight velocity component. Note that
+        ``b * rest_freq / (unyt.c_cgs * sqrt(2))`` specifies the standard
+        deviation of the line-profile for the transition that occurs at a rest
+        frequency of ``rest_freq``.
     use_cython_gen_spec: bool, optional
         Generate the spectrum using the cython implementation. This is
         currently experimental (and should not be used until the results are 
@@ -347,7 +354,7 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
             generate_ray_spectrum_kwargs = {
                 'rest_freq' : rest_freq,
                 'cm_per_length_unit' : length_unit_quan.to('cm').v,
-                'doppler_v_width' : doppler_v_width,
+                'doppler_parameter_b' : doppler_parameter_b,
                 'ndens_HI_n1state_field' : ndens_HI_n1state,
                 'use_cython_gen_spec' : use_cython_gen_spec,
             }
