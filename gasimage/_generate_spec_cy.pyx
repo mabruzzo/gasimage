@@ -24,7 +24,7 @@ cdef struct LineProfileStruct:
 @cython.cdivision(True)
 cdef inline LineProfileStruct prep_LineProfHelper(double rest_freq,
                                                   double doppler_parameter_b,
-                                                  double velocity_offset):# nogil:
+                                                  double velocity_offset) nogil:
     cdef double temp = _C_CGS / (rest_freq * doppler_parameter_b)
     cdef LineProfileStruct out
     out.norm = _INV_SQRT_PI * temp
@@ -33,12 +33,17 @@ cdef inline LineProfileStruct prep_LineProfHelper(double rest_freq,
     return out
 
 cdef inline double eval_line_profile(double obs_freq, double rest_freq,
-                                     LineProfileStruct prof): #nogil:
+                                     LineProfileStruct prof) nogil:
     cdef double emit_freq = obs_freq * prof.emit_freq_factor
     cdef double delta_nu = (emit_freq - rest_freq)
     cdef double exponent = (-1.0 * delta_nu * delta_nu * prof.half_div_sigma2)
     return prof.norm * exp_double(exponent)
 
+
+import unyt
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
 def full_line_profile_evaluation(obs_freq, doppler_parameter_b,
                                  rest_freq, velocity_offset = None):
     """
@@ -80,31 +85,43 @@ def full_line_profile_evaluation(obs_freq, doppler_parameter_b,
     assert (np.ndim(doppler_parameter_b) == 1 and
             np.size(doppler_parameter_b) > 0)
 
-    import unyt
+    out = np.empty((doppler_parameter_b.size,obs_freq.size), dtype = '=f8')
 
-    if velocity_offset is None:
-        velocity_offset = doppler_parameter_b * 0.0
-    else:
-        assert velocity_offset.shape == doppler_parameter_b.shape
-
-    out = np.empty((obs_freq.size, doppler_parameter_b.size), dtype = '=f8')
-
-    velocity_offset = velocity_offset.to('cm/s').v
     doppler_parameter_b = doppler_parameter_b.to('cm/s').v
-    rest_freq = rest_freq.to('Hz').v
     obs_freq = obs_freq.to('Hz').v
 
+    cdef double _rest_freq = rest_freq.to('Hz').v
+
+    cdef double[:,::1] _out = out
+    cdef double[::1] _doppler_parameter_b = doppler_parameter_b
+    cdef double[::1] _obs_freq = obs_freq
+    cdef double[::1] _velocity_offset
+    #import datetime
+    #t1 = datetime.datetime.now()
+
     cdef LineProfileStruct prof
+    cdef Py_ssize_t num_gas_bins = doppler_parameter_b.size
     cdef Py_ssize_t num_obs_freq = obs_freq.size
     cdef Py_ssize_t i, j
 
-    for i in range(doppler_parameter_b.size):
-        prof = prep_LineProfHelper(rest_freq, doppler_parameter_b[i],
-                                   velocity_offset[i])
-        for j in range(num_obs_freq):
-            out[j,i] = eval_line_profile(obs_freq[j], rest_freq, prof)
-    return out / unyt.Hz
-
+    if velocity_offset is None:
+        for i in range(num_gas_bins):
+            prof = prep_LineProfHelper(_rest_freq, doppler_parameter_b[i], 0.0)
+            for j in range(num_obs_freq):
+                _out[i,j] = eval_line_profile(_obs_freq[j], _rest_freq, prof)
+        
+    else:
+        assert velocity_offset.shape == doppler_parameter_b.shape
+        velocity_offset = velocity_offset.to('cm/s').v
+        _velocity_offset = velocity_offset
+        for i in range(num_gas_bins):
+            prof = prep_LineProfHelper(_rest_freq, _doppler_parameter_b[i],
+                                       _velocity_offset[i])
+            for j in range(num_obs_freq):
+                _out[i,j] = eval_line_profile(_obs_freq[j], _rest_freq, prof)
+    #t2 = datetime.datetime.now()
+    #print(t2-t1)
+    return out.T / unyt.Hz
 
 # Einstein A coefficient (in Hz):
 DEF _A10 = 2.85e-15

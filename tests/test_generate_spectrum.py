@@ -1,7 +1,10 @@
+
+import datetime
 import numpy as np
 import unyt
 
 from gasimage.generate_ray_spectrum import line_profile
+from gasimage._generate_spec_cy import full_line_profile_evaluation
 
 def _simplest_line_profile_impl(obs_freq, doppler_parameter_b,
                                 rest_freq, velocity_offset = None):
@@ -85,20 +88,22 @@ def _test_freq_response(rtol, fn = _simplest_line_profile_impl,
                            rest_freq + _stddev_freq_profile,
                            num = 201)
 
+    doppler_parameter_b = _doppler_parameter_b / np.array([1,2,3])
+
     if shift_freq_by_sigma is None:
         v_offset = None
     else:
         freq_arr += _stddev_freq_profile * shift_freq_by_sigma
-        v_offset = (np.array([1,1,1]) *
+        v_offset = (np.ones(shape = doppler_parameter_b.shape) *
                     _doppler_parameter_b * shift_freq_by_sigma / np.sqrt(2))
 
-    doppler_parameter_b = _doppler_parameter_b / np.array([1,2,3])
-
+    t1 = datetime.datetime.now()
     profile = fn(obs_freq = freq_arr,
                  doppler_parameter_b = doppler_parameter_b,
                  rest_freq = rest_freq,
                  velocity_offset = v_offset)
-    print(f'\n{fn.__name__}')
+    t2 = datetime.datetime.now()
+    print(f'\n{fn.__name__}, elapsed: {t2-t1}')
 
     nsigma = 1
     delta_freq = np.diff(freq_arr)[0].v
@@ -129,4 +134,13 @@ def test_line_profile():
     _test_freq_response(rtol = 3e-05, fn = line_profile,
                         shift_freq_by_sigma = 1)
     _test_freq_response(rtol = 4e-05, fn = line_profile,
+                        shift_freq_by_sigma = -1)
+
+
+def test_line_profile_cython():
+    _test_freq_response(rtol = 8e-06, fn = full_line_profile_evaluation,
+                        shift_freq_by_sigma = None)
+    _test_freq_response(rtol = 3e-05, fn = full_line_profile_evaluation,
+                        shift_freq_by_sigma = 1)
+    _test_freq_response(rtol = 4e-05, fn = full_line_profile_evaluation,
                         shift_freq_by_sigma = -1)
