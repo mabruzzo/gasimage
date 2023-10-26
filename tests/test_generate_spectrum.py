@@ -3,8 +3,15 @@ import datetime
 import numpy as np
 import unyt
 
-from gasimage.generate_ray_spectrum import line_profile
-from gasimage._generate_spec_cy import full_line_profile_evaluation
+from gasimage import default_spin_flip_props
+from gasimage.generate_ray_spectrum import (
+    _generate_ray_spectrum_py, line_profile
+)
+from gasimage._generate_spec_cy import (
+    full_line_profile_evaluation, _generate_ray_spectrum_cy
+)
+
+
 
 def _simplest_line_profile_impl(obs_freq, doppler_parameter_b,
                                 rest_freq, velocity_offset = None):
@@ -144,3 +151,95 @@ def test_line_profile_cython():
                         shift_freq_by_sigma = 1)
     _test_freq_response(rtol = 4e-05, fn = full_line_profile_evaluation,
                         shift_freq_by_sigma = -1)
+
+
+
+def _test_generate_ray_spectrum(nfreq = 201, ngas = 100, zero_vlos = False,
+                                seed = 12345, rtol = 1e-15, atol = 0):
+    print('\nray-gen comparison')
+
+    rest_freq = default_spin_flip_props().freq_quantity
+
+    fn_name_pairs = [(_generate_ray_spectrum_py, 'python version'),
+                     (_generate_ray_spectrum_cy, 'optimized cython version')]
+
+    if True:
+        # SETUP
+        rng = np.random.default_rng(seed = seed)
+        T = unyt.unyt_array(1e4, 'K') * rng.uniform(low = 0.75, high = 1.25,
+                                                    size = ngas)
+
+        pressure_div_kboltz = unyt.unyt_quantity(1e3, 'K/cm**3')
+        # assume all gas is neutral Hydrogen in electronic ground state (just
+        # to get some basic numbers)
+        ndens_HI_n1state = pressure_div_kboltz / T
+
+        doppler_parameter_b = np.sqrt(2 * unyt.kboltz_cgs * T / unyt.mh_cgs)
+        _stddev_freq_profile = (rest_freq * doppler_parameter_b.max() /
+                                (np.sqrt(2) * unyt.c_cgs)).to('Hz')
+
+        freq_arr = np.linspace(rest_freq - _stddev_freq_profile,
+                               rest_freq + _stddev_freq_profile, num = nfreq)
+
+        
+        vlos = doppler_parameter_b.min() * rng.uniform(low = 0.5, high = 1.5,
+                                                       size = ngas)
+        if zero_vlos:
+            vlos *= 0
+        dz = np.ones(shape = T.shape, dtype = '=f8') * 0.25 * unyt.pc
+
+        kwargs = dict(
+            obs_freq = freq_arr.to('Hz'),
+            velocities = vlos.to('cm/s'),
+            ndens_HI_n1state = ndens_HI_n1state.to('cm**-3'),
+            doppler_parameter_b = doppler_parameter_b.to('cm/s'),
+            dz = dz.to('cm'),
+        )
+
+        out_l = []
+
+        for fn, fn_name in fn_name_pairs:
+            out_l.append( np.zeros(shape = freq_arr.shape, dtype = '=f8') )
+            if fn == _generate_ray_spectrum_py:
+                my_kwargs = dict(
+                    A10 = default_spin_flip_props().A10_quantity,
+                    rest_freq = default_spin_flip_props().freq_quantity,
+                    only_spontaneous_emission = True,
+                    level_pops_from_stat_weights = True,
+                    ignore_natural_broadening = True,
+                    **kwargs)
+            else:
+                my_kwargs = dict(
+                    ( (k,arr.ndarray_view()) for k,arr in kwargs.items() )
+                )
+                my_kwargs['A10_Hz'] = float(
+                    default_spin_flip_props().A10_quantity.to('Hz').v)
+                my_kwargs['rest_freq'] = float(
+                    default_spin_flip_props().freq_quantity.to('Hz').v)
+            t1 = datetime.datetime.now()
+            fn(out = out_l[-1], **my_kwargs)
+            t2 = datetime.datetime.now()
+            print(f'{fn_name}, elapsed: {t2-t1}')
+
+        py_version, cy_version = out_l
+
+        np.testing.assert_allclose(
+            actual = cy_version, desired = py_version, rtol=rtol, atol = atol,
+            err_msg = ("results of the python and optimized cython versions"
+                       "of ray-spectrum-generation function disagree")
+        )
+
+def test_generate_ray_spectrum():
+    # the max atol is ridiculously small!
+
+    # this first one is a little redundant with the rest, but its presence
+    # seems to speed up subsequent timings
+    _test_generate_ray_spectrum(nfreq = 201, ngas = 100, zero_vlos = False,
+                                seed = 987924, rtol = 3e-12)
+    
+    _test_generate_ray_spectrum(nfreq = 201, ngas = 30, zero_vlos = False,
+                                seed = 987924, rtol = 3e-12)
+    _test_generate_ray_spectrum(nfreq = 201, ngas = 100, zero_vlos = False,
+                                seed = 12345, rtol = 2e-12)
+    _test_generate_ray_spectrum(nfreq = 201, ngas = 100, zero_vlos = True,
+                                seed = 34432, rtol = 4e-15)
