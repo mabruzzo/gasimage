@@ -299,6 +299,7 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                 doppler_parameter_b = cur_doppler_parameter_b.ndarray_view(),
                 rest_freq = float(rest_freq.v),
                 dz = dz.ndarray_view(),
+                A10_Hz = spin_flip_props.A10_quantity.to('Hz').v,
                 out = out)
         else:
             out[:] = _generate_ray_spectrum_py(
