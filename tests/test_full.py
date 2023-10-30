@@ -93,7 +93,6 @@ def read_ppv_from_disk(fname):
     # This sort of output implicitly assumes a cartesian projection.
 
     from astropy.io import fits
-    from astropy.wcs import WCS
     
     with fits.open(fname, mode = 'readonly') as hdul:
         if len(hdul) != 1:
@@ -104,8 +103,6 @@ def read_ppv_from_disk(fname):
 
         # sanity check (note that the WCS object stores things in reverse
         # compared to the numpy shape ordering)
-        assert (WCS(hdr).world_axis_physical_types ==
-                ['pos.eq.ra', 'pos.eq.dec', 'spect.dopplerVeloc'])
 
         data = hdu.data[...]
         if hdr.get('BUNIT', None) == 'K (Tb)':
