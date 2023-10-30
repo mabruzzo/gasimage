@@ -426,7 +426,9 @@ def convert_intensity_to_Tb(ppv, v_channels,
 
     Notes
     -----
-    The correctness of this calculation is not entirely clear
+    The correctness of this calculation is not entirely clear. The main 
+    question is: should we use a single frequency for all channels or a
+    separate for each channel? Currently we do the latter.
     """
 
     if not _has_consistent_dims(ppv, _intensity_dim):
@@ -468,3 +470,32 @@ def convert_intensity_to_Tb(ppv, v_channels,
 
     return (0.5*(unyt.c_cgs / freq)**2 * ppv * unyt.steradian /
             unyt.kboltz_cgs).to('K')
+
+def convert_Tb_to_intensity(ppv_Tb, v_channels,
+                            rest_freq = 1.4204058E+09*unyt.Hz):
+    """
+    Convert brightness temperature ppv array to brightness temperature
+
+    This is the inverse of ``convert_intensity_to_Tb``.
+    """
+    if not _has_consistent_dims(ppv_Tb, unyt.dimensions.temperature):
+        raise ValueError("ppv_Tb has the wrong units")
+    elif not _has_consistent_dims(rest_freq, unyt.dimensions.frequency):
+        raise ValueError("rest_freq doesn't have appropriate dimensions")
+
+    if v_channels is None:
+        freq = rest_freq
+    elif np.shape(v_channels) != np.shape(ppv_Tb)[:1]:
+        raise ValueError("when not None, the number of v_channels should "
+                         "match np.shape(ppv_Tb)[0]")
+    elif not _has_consistent_dims(v_channels, unyt.dimensions.velocity):
+        raise ValueError("v_channels has the wrong units")
+    else:
+        obs_freq = (rest_freq*(1+v_channels/unyt.c_cgs)).to('Hz')
+        freq = obs_freq
+        new_shape = [1 for elem in ppv_Tb.shape]
+        new_shape[0] = v_channels.size
+        freq.shape = tuple(new_shape)
+
+    out = 2 * ppv_Tb * unyt.kboltz_cgs * (freq/unyt.c_cgs)**2 / unyt.steradian
+    return out.to('erg/(cm**2 * Hz * s * steradian)')

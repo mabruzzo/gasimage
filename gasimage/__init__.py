@@ -5,6 +5,7 @@ __version__ = "0.1.0"
 
 from gasimage.optically_thin_ppv import (
     convert_intensity_to_Tb,
+    convert_Tb_to_intensity,
     optically_thin_ppv,
 )
 
