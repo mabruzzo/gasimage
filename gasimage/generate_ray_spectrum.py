@@ -1,7 +1,6 @@
 import numpy as np
 import unyt
 
-from ._generate_spec_cy import _generate_ray_spectrum_cy
 from ._ray_intersections_cy import traverse_grid
 from .rt_config import default_spin_flip_props
 from .utils.misc import _has_consistent_dims
@@ -217,14 +216,14 @@ def _calc_doppler_parameter_b(grid,idx):
 
     return np.sqrt(2*unyt.kb_cgs * T_vals[idx] / (mmw_vals[idx] * unyt.mh_cgs))
 
-def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
-                          cell_width, grid_shape, cm_per_length_unit,
-                          full_ray_start, full_ray_uvec,
-                          rest_freq, obs_freq, doppler_parameter_b = None,
-                          ndens_HI_n1state_field = ('gas',
-                                                    'H_p0_number_density'),
-                          use_cython_gen_spec = False,
-                          out = None):
+def generate_ray_spectrum_legacy(grid, grid_left_edge, grid_right_edge,
+                                 cell_width, grid_shape, cm_per_length_unit,
+                                 full_ray_start, full_ray_uvec,
+                                 rest_freq, obs_freq,
+                                 doppler_parameter_b = None,
+                                 ndens_HI_n1state_field = ('gas',
+                                                           'H_p0_number_density'),
+                                 out = None):
 
     # By default, ``ndens_HI_n1state_field`` is set to the yt-field specifying
     # the number density of all neutral Hydrogen. See the docstring of
@@ -282,31 +281,16 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
 
             ndens_HI_n1state = grid[ndens_HI_n1state_field][idx].to('cm**-3')
 
-            if use_cython_gen_spec:
-                raise RuntimeError(
-                    "The cythonized version has not been properly tested (it "
-                    "may not return correct results)"
-                )
-                _generate_ray_spectrum_cy(
-                    obs_freq = obs_freq.ndview,
-                    velocities = vlos.ndview,
-                    ndens_HI_n1state = ndens_HI_n1state.ndview,
-                    doppler_parameter_b = cur_doppler_parameter_b.ndview,
-                    rest_freq = float(spin_flip_props.freq_quantity.v),
-                    dz = dz.ndarray_view(),
-                    A10_Hz = spin_flip_props.A10_quantity.to('Hz').v,
-                    out = out[i,:])
-            else:
-                out[i,:] = _generate_ray_spectrum_py(
-                    obs_freq = obs_freq, velocities = vlos,
-                    ndens_HI_n1state = grid[ndens_HI_n1state_field][idx],
-                    doppler_parameter_b = cur_doppler_parameter_b,
-                    rest_freq = spin_flip_props.freq_quantity,
-                    dz = dz,
-                    A10 = spin_flip_props.A10_quantity,
-                    only_spontaneous_emission = True,
-                    level_pops_from_stat_weights = True,
-                    ignore_natural_broadening = True)
+            out[i,:] = _generate_ray_spectrum_py(
+                obs_freq = obs_freq, velocities = vlos,
+                ndens_HI_n1state = grid[ndens_HI_n1state_field][idx],
+                doppler_parameter_b = cur_doppler_parameter_b,
+                rest_freq = spin_flip_props.freq_quantity,
+                dz = dz,
+                A10 = spin_flip_props.A10_quantity,
+                only_spontaneous_emission = True,
+                level_pops_from_stat_weights = True,
+                ignore_natural_broadening = True)
     except:
         print('There was a problem!')
         pairs = [('line_uvec', ray_uvec),

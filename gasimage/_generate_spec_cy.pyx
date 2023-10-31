@@ -1,4 +1,6 @@
 import numpy as np
+import unyt
+
 cimport numpy as np
 cimport cython
 
@@ -75,8 +77,6 @@ cdef inline double eval_line_profile(double obs_freq, double rest_freq,
     # finally, multiply the exponential term by the normalization
     return prof.norm * exp_term
 
-
-import unyt
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -249,4 +249,92 @@ def _generate_ray_spectrum_cy(const double[:] obs_freq,
 
     return out
 
+from ._ray_intersections_cy import traverse_grid
+from .generate_ray_spectrum import _calc_doppler_parameter_b
+from .rt_config import default_spin_flip_props
     
+def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
+                          cell_width, grid_shape, cm_per_length_unit,
+                          full_ray_start, full_ray_uvec,
+                          rest_freq, obs_freq,
+                          doppler_parameter_b = None,
+                          ndens_HI_n1state_field = ('gas',
+                                                    'H_p0_number_density'),
+                          out = None):
+    # By default, ``ndens_HI_n1state_field`` is set to the yt-field specifying
+    # the number density of all neutral Hydrogen. See the docstring of
+    # optically_thin_ppv for further discussion about this approximation
+
+    # do NOT use ``grid`` to access length-scale information. This will really
+    # mess some things up related to rescale_length_factor
+
+    nrays = full_ray_uvec.shape[0]
+    if out is not None:
+        assert out.shape == ((nrays,) + obs_freq.shape)
+    else:
+        out = np.empty(shape = (nrays, obs_freq.size),
+                       dtype = np.float64)
+    assert str(obs_freq.units) == 'Hz'
+
+    vx_vals = grid['gas', 'velocity_x']
+    vy_vals = grid['gas', 'velocity_y']
+    vz_vals = grid['gas', 'velocity_z']
+
+    spin_flip_props = default_spin_flip_props()
+
+    try:
+        for i in range(nrays):
+            ray_start = full_ray_start[i,:]
+            ray_uvec = full_ray_uvec[i,:]
+
+            tmp_idx, dz = traverse_grid(
+                line_uvec = ray_uvec,
+                line_start = ray_start,
+                grid_left_edge = grid_left_edge,
+                cell_width = cell_width,
+                grid_shape = grid_shape
+            )
+
+            idx = (tmp_idx[0], tmp_idx[1], tmp_idx[2])
+
+            # convert dz to cm to avoid problems later
+            dz *= cm_per_length_unit
+            dz = unyt.unyt_array(dz, 'cm')
+
+            # compute the velocity component. We should probably confirm
+            # correctness of the velocity sign
+            vlos = (ray_uvec[0] * vx_vals[idx] +
+                    ray_uvec[1] * vy_vals[idx] +
+                    ray_uvec[2] * vz_vals[idx]).to('cm/s')
+
+            if doppler_parameter_b is None:
+                # it might be more sensible to make doppler_parameter_b into a
+                # field
+                cur_doppler_parameter_b = _calc_doppler_parameter_b(
+                    grid,idx).to('cm/s')
+            else:
+                cur_doppler_parameter_b = doppler_parameter_b.to('cm/s')
+
+            ndens_HI_n1state = grid[ndens_HI_n1state_field][idx].to('cm**-3')
+
+            _generate_ray_spectrum_cy(
+                obs_freq = obs_freq.ndview,
+                velocities = vlos.ndview,
+                ndens_HI_n1state = ndens_HI_n1state.ndview,
+                doppler_parameter_b = cur_doppler_parameter_b.ndview,
+                rest_freq = float(spin_flip_props.freq_quantity.v),
+                dz = dz.ndarray_view(),
+                A10_Hz = spin_flip_props.A10_quantity.to('Hz').v,
+                out = out[i,:])
+    except:
+        print('There was a problem!')
+        pairs = [('line_uvec', ray_uvec),
+                 ('line_start', ray_start),
+                 ('grid_left_edge', grid_left_edge),
+                 ('cell_width', cell_width)]
+        for name, arr in pairs:
+            arr_str = np.array2string(arr, floatmode = 'unique')
+            print(f'{name} = {arr_str}')
+        print(f'grid_shape = {np.array2string(np.array(grid_shape))}')
+        raise
+    return out

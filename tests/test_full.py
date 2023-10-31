@@ -38,15 +38,15 @@ def _dummy_create_field_callback(ds):
                  sampling_type = 'local', units = 'auto', take_log = True,
                  dimensions = unyt.dimensions.number_density)
 
-def _create_raw_ppv_and_save_fits(enzoe_sim_path, out_fname,
-                                  sky_delta_latitude_arr_deg,
-                                  sky_longitude_arr_deg, v_channels,
-                                  obs_distance = 12.4*unyt.kpc,
-                                  sky_latitude_ref_deg = 0.0,
-                                  domain_theta_rad = np.pi/2,
-                                  domain_phi_rad = 3*np.pi/2,
-                                  clobber_file = False, nproc = 1):
-
+def _create_raw_ppv(enzoe_sim_path,
+                    sky_delta_latitude_arr_deg,
+                    sky_longitude_arr_deg, v_channels,
+                    obs_distance = 12.4*unyt.kpc,
+                    sky_latitude_ref_deg = 0.0,
+                    domain_theta_rad = np.pi/2,
+                    domain_phi_rad = 3*np.pi/2,
+                    use_cython_gen_spec = True, nproc = 1):
+    # before use_cython_gen_spec existed, it was effectively False
     ds_loader = SnapDatasetInitializer(
         enzoe_sim_path, setup_func = _dummy_create_field_callback)
 
@@ -67,6 +67,7 @@ def _create_raw_ppv_and_save_fits(enzoe_sim_path, out_fname,
             obs_distance = obs_distance, v_channels = v_channels,
             ndens_HI_n1state = ('gas', 'H_p0_number_density'),
             rescale_length_factor = 1,
+            use_cython_gen_spec = use_cython_gen_spec,
             pool = pool
         )
 
@@ -74,6 +75,30 @@ def _create_raw_ppv_and_save_fits(enzoe_sim_path, out_fname,
 
     ppv_Tb = convert_intensity_to_Tb(ppv_arr, rest_freq = _REF_REST_FREQ,
                                      v_channels = v_channels)
+    return ppv_arr, ppv_Tb
+
+def _create_raw_ppv_and_save_fits(enzoe_sim_path, out_fname,
+                                  sky_delta_latitude_arr_deg,
+                                  sky_longitude_arr_deg, v_channels,
+                                  obs_distance = 12.4*unyt.kpc,
+                                  sky_latitude_ref_deg = 0.0,
+                                  domain_theta_rad = np.pi/2,
+                                  domain_phi_rad = 3*np.pi/2,
+                                  use_cython_gen_spec = True,
+                                  clobber_file = False, nproc = 1):
+    # before use_cython_gen_spec existed, it was effectively False
+
+    _, ppv_Tb = _create_raw_ppv(
+        enzoe_sim_path = enzoe_sim_path,
+        sky_delta_latitude_arr_deg = sky_delta_latitude_arr_deg,
+        sky_longitude_arr_deg = sky_longitude_arr_deg,
+        v_channels = v_channels,
+        obs_distance = obs_distance,
+        sky_latitude_ref_deg = sky_latitude_ref_deg,
+        domain_theta_rad = domain_theta_rad,
+        domain_phi_rad = domain_phi_rad,
+        use_cython_gen_spec = use_cython_gen_spec,
+        nproc = 1)
 
     assert np.isfinite(ppv_Tb).all(), "SANITY CHECK"
 
@@ -143,6 +168,7 @@ def _test_full_raytrace_perspective_helper(answer_test_config, indata_dir,
         obs_distance = unyt.unyt_quantity(12.4, 'kpc'),
         sky_latitude_ref_deg = 0.0,
         domain_theta_rad = np.pi/2, domain_phi_rad = 3*np.pi/2,
+        use_cython_gen_spec = True,
         nproc = 1
     )
 
@@ -177,21 +203,66 @@ def test_full_raytrace_perspective(answer_test_config, indata_dir):
     # conftest.py (and decorated with @pytest.fixture).
     # -> these values are informed by the --save-answer-dir, --ref-answer-dir,
     #    --indata-dir options that get passed on the command-line
-    
-    _test_full_raytrace_perspective_helper(answer_test_config, indata_dir,
-                                           base_fname = 'result.fits')
+
+    # older versions of this test were effectively run with
+    # use_cython_gen_spec = False. But, because the calculations are done
+    # in 64-bit precision, and the comparisons are done after coercing to
+    # 32-bit precision, the tests still pass!
+
+    _test_full_raytrace_perspective_helper(
+        answer_test_config, indata_dir, base_fname = 'result.fits',
+        override_kwargs = dict(use_cython_gen_spec = True)
+    )
 
 def test_full_raytrace_perspective_alt(answer_test_config, indata_dir):
     # just like test_full_raytrace_perspective, but with some arbitrary
     # differences
+
+    # older versions of this test were effectively run with
+    # use_cython_gen_spec = False. But, because the calculations are done
+    # in 64-bit precision, and the comparisons are done after coercing to
+    # 32-bit precision, the tests still pass!
 
     _test_full_raytrace_perspective_helper(
         answer_test_config, indata_dir, base_fname = 'result.fits',
         override_kwargs = dict(obs_distance = unyt.unyt_quantity(15, 'kpc'),
                                domain_theta_rad = 2*np.pi/3,
                                domain_phi_rad = np.pi/3,
+                               use_cython_gen_spec = True,
         )
     )
+
+
+def test_compare_cython_legacy_gen_spec(indata_dir):
+    enzoe_sim_path = os.path.join(
+        indata_dir, ('X100_M1.5_HD_CDdftCstr_R56.38_logP3_Res8/cloud_07.5000/'
+                     'cloud_07.5000.block_list')
+    )
+
+    ppv_arrs = []
+
+    for use_cython_gen_spec in [True, False]:
+        print(f'\nstart run with use_cython_gen_spec = {use_cython_gen_spec}')
+        ppv, _ = _create_raw_ppv(
+            enzoe_sim_path = enzoe_sim_path,
+            sky_delta_latitude_arr_deg = np.arange(0.0, 0.25, 0.0333333),
+            sky_longitude_arr_deg = np.arange(0.25, 0.51,     0.0333333),
+            v_channels = unyt.unyt_array(np.arange(-170,180,0.736125), 'km/s'),
+            obs_distance = unyt.unyt_quantity(12.4, 'kpc'),
+            sky_latitude_ref_deg = 0.0,
+            domain_theta_rad = np.pi/2, domain_phi_rad = 3*np.pi/2,
+            use_cython_gen_spec = use_cython_gen_spec,
+            nproc = 1
+        )
+        ppv_arrs.append(ppv)
+
+    ppv_cython, ppv_legacy = ppv_arrs
+
+    assert_allclose_units(
+        actual = ppv_cython, desired = ppv_legacy,
+        err_msg = ("failure in comparison of ppvs built with cython-based "
+                   "spectrum builder and the legacy spectrum builder"),
+        rtol = 4.e-12, atol = 0.0)
 
 # other useful tests for the future:
 # - rays outside of the domain

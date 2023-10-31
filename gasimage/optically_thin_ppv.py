@@ -19,7 +19,8 @@ except ImportError:
 import gc
 
 from ._ray_intersections_cy import ray_box_intersections, traverse_grid
-from .generate_ray_spectrum import generate_ray_spectrum
+from .generate_ray_spectrum import generate_ray_spectrum_legacy
+from ._generate_spec_cy import generate_ray_spectrum
 from .ray_collection import ConcreteRayList
 from .utils.misc import _has_consistent_dims
 
@@ -51,13 +52,15 @@ class Worker:
     TODO: explain somewhat roundabout handling of ds_initializer
     """
     def __init__(self, ds_initializer, obs_freq, length_unit_name,
-                 rescale_length_factor, generate_ray_spectrum_kwargs):
+                 rescale_length_factor, use_cython_gen_spec,
+                 generate_ray_spectrum_kwargs):
         assert np.ndim(obs_freq) == 1
 
         self.ds_initializer = ds_initializer
         self.obs_freq = obs_freq
         self.length_unit_name = length_unit_name
         self.rescale_length_factor = rescale_length_factor
+        self.use_cython_gen_spec = use_cython_gen_spec
 
         for key in ['obs_freq', 'grid', 'grid_left_edge', 'grid_right_edge',
                     'cell_width', 'grid_shape', 'out', 'ray_start', 'ray_uvec']:
@@ -93,12 +96,21 @@ class Worker:
         cell_width = ((right_edge - left_edge)/np.array(grid.shape))
 
         # now actually process the rays
-        generate_ray_spectrum(
-            grid, grid_left_edge = left_edge, grid_right_edge = right_edge,
-            cell_width = cell_width, grid_shape = grid_shape,
-            full_ray_start = ray_start, full_ray_uvec = ray_uvec,
-            obs_freq = self.obs_freq, out = out,
-            **self.generate_ray_spectrum_kwargs
+        if self.use_cython_gen_spec:
+            generate_ray_spectrum(
+                grid, grid_left_edge = left_edge, grid_right_edge = right_edge,
+                cell_width = cell_width, grid_shape = grid_shape,
+                full_ray_start = ray_start, full_ray_uvec = ray_uvec,
+                obs_freq = self.obs_freq, out = out,
+                **self.generate_ray_spectrum_kwargs
+            )
+        else:
+            generate_ray_spectrum_legacy(
+                grid, grid_left_edge = left_edge, grid_right_edge = right_edge,
+                cell_width = cell_width, grid_shape = grid_shape,
+                full_ray_start = ray_start, full_ray_uvec = ray_uvec,
+                obs_freq = self.obs_freq, out = out,
+                **self.generate_ray_spectrum_kwargs
             )
         grid.clear_data()
         del grid
@@ -208,7 +220,8 @@ class RayGridAssignments:
 
 def optically_thin_ppv(v_channels, ray_collection, ds,
                        ndens_HI_n1state = ('gas', 'H_p0_number_density'),
-                       *, doppler_parameter_b = None, use_cython_gen_spec = False,
+                       *, doppler_parameter_b = None,
+                       use_cython_gen_spec = True,
                        rescale_length_factor = None, pool = None):
     """
     Generate a mock ppv image (position-position-velocity image) of a
@@ -244,9 +257,8 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
         deviation of the line-profile for the transition that occurs at a rest
         frequency of ``rest_freq``.
     use_cython_gen_spec: bool, optional
-        Generate the spectrum using the cython implementation. This is
-        currently experimental (and should not be used until the results are 
-        confirmed to be consistent with the python implementation).
+        Generate the spectrum using the faster cython implementation. Default
+        is True.
     rescale_length_factor: float, Optional
         When not `None`, the width of each cell is multiplied by this factor.
         (This effectively holds the position of the simulation's origin fixed
@@ -346,12 +358,12 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
             obs_freq = (rest_freq*(1+v_channels/unyt.c_cgs)).to('Hz'),
             length_unit_name = length_unit_name,
             rescale_length_factor = rescale_length_factor,
+            use_cython_gen_spec = use_cython_gen_spec,
             generate_ray_spectrum_kwargs = {
                 'rest_freq' : rest_freq,
                 'cm_per_length_unit' : length_unit_quan.to('cm').v,
                 'doppler_parameter_b' : doppler_parameter_b,
                 'ndens_HI_n1state_field' : ndens_HI_n1state,
-                'use_cython_gen_spec' : use_cython_gen_spec,
             }
         )
 
