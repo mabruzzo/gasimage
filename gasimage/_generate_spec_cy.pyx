@@ -15,7 +15,6 @@ DEF _C_CGS = 29979245800.0
 # = yt.units.h_cgs
 DEF _H_CGS = 6.62606957e-27
 
-
 # When considering a transition we construct a new LineProfileStruct for each
 # gas element.
 # -> An instance is configured based on the doppler_parameter_b value and los
@@ -250,10 +249,95 @@ cpdef _generate_ray_spectrum_cy(const double[::1] obs_freq,
     return out
 
 from ._ray_intersections_cy import traverse_grid
-from .generate_ray_spectrum import _calc_doppler_parameter_b
 from .rt_config import default_spin_flip_props
-from .utils.misc import check_consistent_arg_dims
+from .utils.misc import check_consistent_arg_dims, _has_consistent_dims
+
+# DEFINE DIFFERENT APPROACHES FOR COMPUTING THE DOPPLER PARAMETER, B
+#
+# BACKGROUND: The Doppler parameter had units consistent with velocity and is
+# often represented by the variable ``b``. ``b/sqrt(2)`` specifies the standard
+# deviation of the line-of-sight velocity component. For a given line
+# transition with a rest-frame frequency ``rest_freq``,
+# ``b * rest_freq/unyt.c_cgs`` specifies what Rybicki and Lightman call the
+# "Doppler width". The "Doppler width" divided by ``sqrt(2)`` is the standard
+# deviation of the line-profile for the given transition.
+#
+# We choose to represent the different strategies as distinct ExtensionTypes so
+# we can use cython's ability to dispatch based on the desired strategy for
+# computing the doppler-broadening
+# -> a potential optimization my be to treat the extension types as structs
+#    (and avoid attaching methods to them)
+
+cdef class ScalarDopplerParameter:
+    cdef double doppler_parameter_b_cm_per_s
+
+    def __init__(self, doppler_parameter_b):
+        assert doppler_parameter_b is not None
+        assert doppler_parameter_b.to('cm/s').v > 0
+        self.doppler_parameter_b_cm_per_s = doppler_parameter_b.to('cm/s').v
+
+    cdef object get_vals_cm_per_s(self, idx):
+        return np.full(shape = (idx[0].size,),
+                       fill_value = self.doppler_parameter_b_cm_per_s,
+                       dtype = 'f8')
+
+# = yt.units.mh_cgs
+DEF _MH_CGS = 1.6737352238051868e-24
+# = yt.units.kboltz_cgs
+DEF _KBOLTZ_CGS = 1.3806488e-16
+
+cdef class DopplerParameterFromTemperatureMMW:
+    cdef object temperature_arr
+    cdef object mmw_arr
+    cdef double internal_to_Kelvin_factor
+
+    def __init__(self, grid):
+        T_field = ('gas','temperature')
+        mmw_field = ('gas','mean_molecular_weight')
+        T_vals, mmw_vals = grid[T_field], grid[mmw_field]
+
+        # previously, a bug in the units caused a really hard to debug error
+        # (when running the program in parallel). So now we manually check!
+        if not _has_consistent_dims(T_vals, unyt.dimensions.temperature):
+            raise RuntimeError(f"{T_field!r}'s units are wrong")
+        elif not _has_consistent_dims(mmw_vals, unyt.dimensions.dimensionless):
+            raise RuntimeError(f"{mmw_field!r}'s units are wrong")
+
+        self.temperature_arr = T_vals.ndview # strip units
+        self.mmw_arr = mmw_vals.ndview
+
+        self.internal_to_Kelvin_factor = float(T_vals.uq.to('K').v)
+
+    cdef object get_vals_cm_per_s(self, idx):
+        return np.sqrt(2* _KBOLTZ_CGS * self.internal_to_Kelvin_factor *
+                       self.temperature_arr[idx] /
+                       (self.mmw_arr[idx] * _MH_CGS))
     
+ctypedef fused FusedDopplerParameterType:
+    ScalarDopplerParameter
+    DopplerParameterFromTemperatureMMW
+
+def _calc_doppler_parameter_b(grid,idx):
+    """
+    Compute the Doppler parameter (aka Doppler broadening parameter) of the gas
+    in cells specified by the inidices idx.
+
+    Note
+    ----
+    The Doppler parameter had units consistent with velocity and is often
+    represented by the variable ``b``. ``b/sqrt(2)`` specifies the standard
+    deviation of the line-of-sight velocity component.
+
+    For a given line-transition with a rest-frame frequency ``rest_freq``,
+    ``b * rest_freq/unyt.c_cgs`` specifies what Rybicki and Lightman call the
+    "Doppler width". The "Doppler width" divided by ``sqrt(2)`` is the standard
+    deviation of the line-profile for the given transition.
+
+    (THIS IS DEFINED FOR BACKWARDS COMPATABILITY)
+    """
+    tmp = DopplerParameterFromTemperatureMMW(grid)
+    return tmp.get_vals_cm_per_s(idx) * (unyt.cm/unyt.s)
+
 def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                           cell_width, grid_shape, cm_per_length_unit,
                           full_ray_start, full_ray_uvec,
@@ -262,6 +346,44 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                           ndens_HI_n1state_field = ('gas',
                                                     'H_p0_number_density'),
                           out = None):
+    check_consistent_arg_dims(obs_freq, unyt.dimensions.frequency, 'obs_freq')
+    assert obs_freq.ndim == 1
+
+    nrays = full_ray_uvec.shape[0]
+    if out is not None:
+        assert out.shape == (nrays, obs_freq.size)
+    else:
+        out = np.empty(shape = (nrays, obs_freq.size), dtype = np.float64)
+
+    if doppler_parameter_b is None:
+        doppler_parameter_b = DopplerParameterFromTemperatureMMW(grid)
+    else:
+        doppler_parameter_b = ScalarDopplerParameter(doppler_parameter_b)
+
+    return _generate_ray_spectrum(
+        grid = grid, grid_left_edge = grid_left_edge,
+        grid_right_edge = grid_right_edge,
+        cell_width = cell_width, grid_shape = grid_shape,
+        cm_per_length_unit = cm_per_length_unit,
+        full_ray_start = full_ray_start, full_ray_uvec = full_ray_uvec,
+        rest_freq = rest_freq, obs_freq = obs_freq,
+        doppler_parameter_b = doppler_parameter_b,
+        ndens_HI_n1state_field = ndens_HI_n1state_field,
+        out = out)
+
+
+def _generate_ray_spectrum(object grid, object grid_left_edge,
+                           object grid_right_edge,
+                           object cell_width, object grid_shape,
+                           object cm_per_length_unit,
+                           object full_ray_start,
+                           object full_ray_uvec,
+                           object rest_freq,
+                           object obs_freq,
+                           FusedDopplerParameterType doppler_parameter_b,
+                           object ndens_HI_n1state_field,
+                           object out):
+
     # By default, ``ndens_HI_n1state_field`` is set to the yt-field specifying
     # the number density of all neutral Hydrogen. See the docstring of
     # optically_thin_ppv for further discussion about this approximation
@@ -269,15 +391,6 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
     # do NOT use ``grid`` to access length-scale information. This will really
     # mess some things up related to rescale_length_factor
 
-    check_consistent_arg_dims(obs_freq, unyt.dimensions.frequency, 'obs_freq')
-    assert obs_freq.ndim == 1
-
-
-    cdef Py_ssize_t nrays = full_ray_uvec.shape[0]
-    if out is not None:
-        assert out.shape == (int(nrays), obs_freq.size)
-    else:
-        out = np.empty(shape = (int(nrays), obs_freq.size), dtype = np.float64)
 
     # Prefetch some quantities and do some work to figure out unit conversions
     # ahead of time:
@@ -304,15 +417,10 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
     cdef double _A10_Hz = float(spin_flip_props.A10_quantity.to('Hz').v)
     cdef double _rest_freq_Hz = float(spin_flip_props.freq_quantity.to('Hz').v)
 
+    cdef Py_ssize_t nrays = full_ray_uvec.shape[0]
     cdef Py_ssize_t i
 
     # some additional optimizations are definitely still possible:
-    # - deal with the doppler_parameter_b calculation (so that we are no longer
-    #   calling a python function within the for-loop or dealing with
-    #   unyt-operations inside the for-loop). Not sure how much difference the
-    #   branch (when doppler_parameter_b is None) makes, but we could use
-    #   fused_types for conditional compilation (or we could just drop support
-    #   for the fixed doppler_parameter_b)
     # - we can redefine traverse_grid so that it is a cpdef-ed function (avoid
     #   python overhead)
     # - we can preallocate buffers for storing the data along rays. Then we can
@@ -343,13 +451,7 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                     ray_uvec[1] * vy[idx] +
                     ray_uvec[2] * vz[idx]) * vel_to_cm_per_s_factor
 
-            if doppler_parameter_b is None:
-                # it might be more sensible to make doppler_parameter_b into a
-                # field
-                cur_doppler_parameter_b = _calc_doppler_parameter_b(
-                    grid,idx).to('cm/s')
-            else:
-                cur_doppler_parameter_b = doppler_parameter_b.to('cm/s')
+            cur_doppler_parameter_b = doppler_parameter_b.get_vals_cm_per_s(idx)
 
             ndens_HI_n1state = ndens_HI_n1state_grid[idx] * ndens_to_cc_factor
 
@@ -357,7 +459,7 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                 obs_freq = _obs_freq_view,
                 velocities = vlos,
                 ndens_HI_n1state = ndens_HI_n1state,
-                doppler_parameter_b = cur_doppler_parameter_b.ndview,
+                doppler_parameter_b = cur_doppler_parameter_b,
                 rest_freq = _rest_freq_Hz,
                 dz = dz,
                 A10_Hz = _A10_Hz,

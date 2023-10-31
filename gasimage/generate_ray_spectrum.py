@@ -1,6 +1,7 @@
 import numpy as np
 import unyt
 
+from ._generate_spec_cy import _calc_doppler_parameter_b
 from ._ray_intersections_cy import traverse_grid
 from .rt_config import default_spin_flip_props
 from .utils.misc import _has_consistent_dims
@@ -186,35 +187,6 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI_n1state,
         )
     else:
         raise RuntimeError("support hasn't been added for this configuration")
-
-def _calc_doppler_parameter_b(grid,idx):
-    """
-    Compute the Doppler parameter (aka Doppler broadening parameter) of the gas
-    in cells specified by the inidices idx.
-
-    Note
-    ----
-    The Doppler parameter had units consistent with velocity and is often
-    represented by the variable ``b``. ``b/sqrt(2)`` specifies the standard
-    deviation of the line-of-sight velocity component.
-
-    For a given line-transition with a rest-frame frequency ``rest_freq``,
-    ``b * rest_freq/unyt.c_cgs`` specifies what Rybicki and Lightman call the
-    "Doppler width". The "Doppler width" divided by ``sqrt(2)`` is the standard
-    deviation of the line-profile for the given transition.
-    """
-
-    T_field, mmw_field = ('gas','temperature'), ('gas','mean_molecular_weight')
-    T_vals, mmw_vals = grid[T_field], grid[mmw_field]
-
-    # previously, a bug in the units caused a really hard to debug error (when
-    # running the program in parallel. So now we manually check!
-    if not _has_consistent_dims(T_vals, unyt.dimensions.temperature):
-        raise RuntimeError(f"{T_field!r}'s units are wrong")
-    elif not _has_consistent_dims(mmw_vals, unyt.dimensions.dimensionless):
-        raise RuntimeError(f"{mmw_field!r}'s units are wrong")
-
-    return np.sqrt(2*unyt.kb_cgs * T_vals[idx] / (mmw_vals[idx] * unyt.mh_cgs))
 
 def generate_ray_spectrum_legacy(grid, grid_left_edge, grid_right_edge,
                                  cell_width, grid_shape, cm_per_length_unit,
