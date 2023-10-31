@@ -347,6 +347,12 @@ cdef inline double _calc_next_face_t(int cur_cell_index,
         raise AssertionError()
     return out
 
+def max_num_intersections(grid_shape):
+    # conservative upper bound on the maximum number of grid intersections
+    # the max number is actually smaller (and related to the max number of
+    # intersectable cells by a diagonal line)
+    return np.sum(grid_shape)
+
 def traverse_grid(line_uvec, line_start,
                   grid_left_edge, cell_width,
                   grid_shape):
@@ -393,10 +399,8 @@ def traverse_grid(line_uvec, line_start,
                                    order = 'C')
 
 
-    # be conservative about the max number of intersections
-    # the max number is actually smaller (and related to the
-    # max number of intersectable cells by a diagonal line)
-    max_num = np.sum(grid_shape)
+    # get the max number of intersections
+    max_num = max_num_intersections(grid_shape)
 
     # I'm using np.compat.long to be explicit that I want the "long" data type
     indices_arr = np.empty((3,max_num), np.compat.long, order = 'C')

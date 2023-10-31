@@ -248,7 +248,7 @@ cpdef _generate_ray_spectrum_cy(const double[::1] obs_freq,
 
     return out
 
-from ._ray_intersections_cy import traverse_grid
+from ._ray_intersections_cy import traverse_grid, max_num_intersections
 from .rt_config import default_spin_flip_props
 from .utils.misc import check_consistent_arg_dims, _has_consistent_dims
 
@@ -411,11 +411,12 @@ def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
                            object full_ray_start, object full_ray_uvec,
                            object rest_freq,
                            double[::1] obs_freq_Hz,
-                           object vx, object vy, object vz,
-                           object vel_to_cm_per_s_factor,
+                           double[:,:,::1] vx, double[:,:,::1] vy,
+                           double[:,:,::1] vz,
+                           double vel_to_cm_per_s_factor,
                            FusedDopplerParameterType doppler_parameter_b,
-                           object ndens_HI_n1state_grid,
-                           object ndens_to_cc_factor,
+                           double[:,:,::1] ndens_HI_n1state_grid,
+                           double ndens_to_cc_factor,
                            double[:,::1] out):
 
     spin_flip_props = default_spin_flip_props()
@@ -423,11 +424,26 @@ def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
     cdef double _rest_freq_Hz = float(spin_flip_props.freq_quantity.to('Hz').v)
 
     cdef Py_ssize_t nrays = full_ray_uvec.shape[0]
-    cdef Py_ssize_t i
+    cdef Py_ssize_t i, j
+
+    # declaring types used by the nested loop:
+    cdef long i0, i1, i2
+    cdef const double[::1] cur_uvec_view
+
+    cdef long max_num = max_num_intersections(grid_shape)
+    _vlos_npy = np.empty(shape = (max_num,), dtype = 'f8')
+    cdef double[::1] vlos = _vlos_npy
+    _ndens_HI_n1state_npy = np.empty(shape = (max_num,), dtype = 'f8')
+    cdef double[::1] ndens_HI_n1state = _ndens_HI_n1state_npy
+
+    cdef long[:,:] idx3D_view
+    
 
     # some additional optimizations are definitely still possible:
     # - we can redefine traverse_grid so that it is a cpdef-ed function (avoid
-    #   python overhead)
+    #   python overhead). We could also define a variant that
+    #     (i) specifies tmp_idx with a more optimal layout
+    #     (ii) lets us preallocate tmp_idx and dz
     # - we can preallocate buffers for storing the data along rays. Then we can
     #   avoid using numpy's fancy-indexing and directly index ourselves
 
@@ -443,22 +459,31 @@ def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
                 cell_width = cell_width,
                 grid_shape = grid_shape
             )
+            idx3D_view = tmp_idx
 
             idx = (tmp_idx[0], tmp_idx[1], tmp_idx[2])
 
             # convert dz to cm to avoid problems later
             dz *= cm_per_length_unit
 
-            # compute the velocity component (this has units of cm/s, but is a
-            # regular numpy array. We should probably confirm correctness of
-            # the velocity sign
-            vlos = (ray_uvec[0] * vx[idx] +
-                    ray_uvec[1] * vy[idx] +
-                    ray_uvec[2] * vz[idx]) * vel_to_cm_per_s_factor
-
             cur_doppler_parameter_b = doppler_parameter_b.get_vals_cm_per_s(idx)
 
-            ndens_HI_n1state = ndens_HI_n1state_grid[idx] * ndens_to_cc_factor
+            cur_uvec_view = ray_uvec
+            with cython.boundscheck(False), cython.wraparound(False):
+                for j in range(dz.size):
+                    i0 = idx3D_view[0,j]
+                    i1 = idx3D_view[1,j]
+                    i2 = idx3D_view[2,j]
+
+                    # should probably confirm correctness of velocity sign
+                    vlos[j] = (
+                        cur_uvec_view[0] * vx[i0,i1,i2] +
+                        cur_uvec_view[1] * vy[i0,i1,i2] +
+                        cur_uvec_view[2] * vz[i0,i1,i2]
+                    ) * vel_to_cm_per_s_factor
+
+                    ndens_HI_n1state[j] = (ndens_HI_n1state_grid[i0,i1,i2] *
+                                           ndens_to_cc_factor)
 
             _generate_ray_spectrum_cy(
                 obs_freq = obs_freq_Hz,
