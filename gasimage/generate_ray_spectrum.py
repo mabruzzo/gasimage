@@ -243,11 +243,13 @@ def generate_ray_spectrum_legacy(grid, grid_left_edge, grid_right_edge,
                     ray_uvec[1] * vy_vals[idx] +
                     ray_uvec[2] * vz_vals[idx]).to('cm/s')
 
-            if doppler_parameter_b is None:
+            if ((doppler_parameter_b is None) or
+                isinstance(doppler_parameter_b, str)):
                 # it might be more sensible to make doppler_parameter_b into a
                 # field
                 cur_doppler_parameter_b = _calc_doppler_parameter_b(
-                    grid,idx).to('cm/s')
+                    grid, idx3Darr=tmp_idx, approach = doppler_parameter_b,
+                ).to('cm/s')
             else:
                 cur_doppler_parameter_b = doppler_parameter_b.to('cm/s')
 

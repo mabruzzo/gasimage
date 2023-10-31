@@ -5,6 +5,7 @@ cimport numpy as np
 cimport cython
 
 from libc.math cimport exp as exp_f64
+from libc.math cimport sqrt as sqrt_f64
 
 DEF _INV_SQRT_PI = 0.5641895835477563
 DEF _QUARTER_DIV_PI = 0.07957747154594767
@@ -276,10 +277,51 @@ cdef class ScalarDopplerParameter:
         assert doppler_parameter_b.to('cm/s').v > 0
         self.doppler_parameter_b_cm_per_s = doppler_parameter_b.to('cm/s').v
 
-    cdef object get_vals_cm_per_s(self, idx):
-        return np.full(shape = (idx[0].size,),
-                       fill_value = self.doppler_parameter_b_cm_per_s,
-                       dtype = 'f8')
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
+    cdef get_vals_cm_per_s(self, long[:,:] idx3Darr,
+                           double [::1] out):
+        cdef Py_ssize_t i
+        for i in range(idx3Darr.shape[1]): # note: out is allowed to be longer
+                                           #       than is required
+            out[i] = self.doppler_parameter_b_cm_per_s
+
+#cdef class DopplerParameterFromSpecificEint:
+#    cdef double[:,:,::1] specific_eint_arr
+#    cdef double factor # includes terms to convert to cm/s
+#
+#    def __init__(self, grid):
+#        eint_vals = grid['enzoe','internal_energy']
+#
+#        if not _has_consistent_dims(eint_vals, unyt.dimensions.velocity**2):
+#            raise RuntimeError(f"('enzoe','internal_energy')'s units are wrong")
+#
+#        # doppler b parameter is: b = sqrt( 2 * kboltz * T / (mu * mH))
+#        # note that   eint = p / ((gamma - 1) * rho)
+#        #             eint * (gamma - 1) = p / rho
+#        #                                = kboltz * T / (mu * mH)
+#        #             b = sqrt(2 * eint * (gamma - 1))
+#        #             b = sqrt(2 * (gamma - 1)) * sqrt(eint)
+#
+#        factor = np.sqrt(2 * (grid.ds.gamma - 1))
+#        # include conversion factor to cm/s
+#        factor *= np.sqrt(eint_vals.uq).to('cm/s').v
+#
+#        self.specific_eint_arr = eint_vals.ndview
+#        self.factor = factor
+#
+#        raise RuntimeError("NOTE FULLY TESTED YET")
+#
+#    cdef get_vals_cm_per_s(self, long[:,:] idx3Darr,
+#                           double [::1] out):
+#        cdef Py_ssize_t i
+#        cdef long i0, i1, i2
+#        for i in range(idx3Darr.shape[1]): # note: out is allowed to be longer
+#                                           #       than is required
+#            i0 = idx3Darr[0,i]
+#            i1 = idx3Darr[1,i]
+#            i2 = idx3Darr[2,i]
+#            out[i] = self.factor * sqrt_f64(self.specific_eint_arr[i0,i1,i2])
 
 # = yt.units.mh_cgs
 DEF _MH_CGS = 1.6737352238051868e-24
@@ -287,8 +329,8 @@ DEF _MH_CGS = 1.6737352238051868e-24
 DEF _KBOLTZ_CGS = 1.3806488e-16
 
 cdef class DopplerParameterFromTemperatureMMW:
-    cdef object temperature_arr
-    cdef object mmw_arr
+    cdef double[:,:,::1] temperature_arr
+    cdef double[:,:,::1] mmw_arr
     cdef double internal_to_Kelvin_factor
 
     def __init__(self, grid):
@@ -308,19 +350,50 @@ cdef class DopplerParameterFromTemperatureMMW:
 
         self.internal_to_Kelvin_factor = float(T_vals.uq.to('K').v)
 
-    cdef object get_vals_cm_per_s(self, idx):
-        return np.sqrt(2* _KBOLTZ_CGS * self.internal_to_Kelvin_factor *
-                       self.temperature_arr[idx] /
-                       (self.mmw_arr[idx] * _MH_CGS))
-    
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
+    cdef get_vals_cm_per_s(self, long[:,:] idx3Darr,
+                           double [::1] out):
+        cdef Py_ssize_t i
+        cdef long i0, i1, i2
+        for i in range(idx3Darr.shape[1]): # note: out is allowed to be longer
+                                           #       than is required
+            i0 = idx3Darr[0,i]
+            i1 = idx3Darr[1,i]
+            i2 = idx3Darr[2,i]
+
+            out[i] = sqrt_f64(2.0 * _KBOLTZ_CGS *
+                              self.internal_to_Kelvin_factor *
+                              self.temperature_arr[i0,i1,i2] /
+                              (self.mmw_arr[i0,i1,i2] * _MH_CGS))
+
 ctypedef fused FusedDopplerParameterType:
     ScalarDopplerParameter
     DopplerParameterFromTemperatureMMW
 
-def _calc_doppler_parameter_b(grid,idx):
+def _construct_Doppler_Parameter_Approach(grid, approach):
+    if (approach is None):
+        return DopplerParameterFromTemperatureMMW(grid)
+    #elif isinstance(approach,str):
+    #    if approach == 'eint':
+    #        assert ('enzoe','internal_energy') in grid.ds.field_list
+    #        return DopplerParameterFromSpecificEint(grid)
+    #    elif approach == 'temperature':
+    #        return DopplerParameterFromTemperatureMMW(grid)
+    #    else:
+    #        raise ValueError(
+    #            "when doppler_parameter_b approach is a str, it must be "
+    #            f"'eint' or 'temperature', not {approach!r}")
+    else:
+        return ScalarDopplerParameter(approach)
+
+def _calc_doppler_parameter_b(grid,idx3Darr, approach = None):
     """
     Compute the Doppler parameter (aka Doppler broadening parameter) of the gas
     in cells specified by the inidices idx.
+
+    Note: idx = (idx3Darr[0], idx3Darr[1], idx3Darr[2]) could be used to index
+    a numpy array
 
     Note
     ----
@@ -335,8 +408,17 @@ def _calc_doppler_parameter_b(grid,idx):
 
     (THIS IS DEFINED FOR BACKWARDS COMPATABILITY)
     """
-    tmp = DopplerParameterFromTemperatureMMW(grid)
-    return tmp.get_vals_cm_per_s(idx) * (unyt.cm/unyt.s)
+    out = np.empty(shape = (idx3Darr.shape[1],), dtype = 'f8')
+    tmp = _construct_Doppler_Parameter_Approach(grid, approach)
+    if isinstance(tmp, ScalarDopplerParameter):
+        (<ScalarDopplerParameter>tmp).get_vals_cm_per_s(
+            idx3Darr = idx3Darr, out = out)
+    elif isinstance(tmp, DopplerParameterFromTemperatureMMW):
+        (<DopplerParameterFromTemperatureMMW>tmp).get_vals_cm_per_s(
+            idx3Darr = idx3Darr, out = out)
+    else:
+        raise RuntimeError("SOMETHING IS WRONG")
+    return out * (unyt.cm/unyt.s)
 
 def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                           cell_width, grid_shape, cm_per_length_unit,
@@ -384,10 +466,9 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
     vx, vy, vz = tmp_vx.ndview, tmp_vy.ndview, tmp_vz.ndview
 
 
-    if doppler_parameter_b is None:
-        doppler_parameter_b = DopplerParameterFromTemperatureMMW(grid)
-    else:
-        doppler_parameter_b = ScalarDopplerParameter(doppler_parameter_b)
+    doppler_parameter_b = _construct_Doppler_Parameter_Approach(
+        grid, approach = doppler_parameter_b
+    )
 
     return _generate_ray_spectrum(
         grid_left_edge = grid_left_edge,
@@ -429,6 +510,7 @@ def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
     # declaring types used by the nested loop:
     cdef long i0, i1, i2
     cdef const double[::1] cur_uvec_view
+    cdef long[:,:] idx3D_view
 
     cdef long max_num = max_num_intersections(grid_shape)
     _vlos_npy = np.empty(shape = (max_num,), dtype = 'f8')
@@ -436,7 +518,8 @@ def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
     _ndens_HI_n1state_npy = np.empty(shape = (max_num,), dtype = 'f8')
     cdef double[::1] ndens_HI_n1state = _ndens_HI_n1state_npy
 
-    cdef long[:,:] idx3D_view
+    _cur_doppler_parameter_b_npy = np.empty(shape = (max_num,), dtype = 'f8')
+    cdef double[::1] cur_doppler_parameter_b = _cur_doppler_parameter_b_npy
     
 
     # some additional optimizations are definitely still possible:
@@ -461,12 +544,12 @@ def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
             )
             idx3D_view = tmp_idx
 
-            idx = (tmp_idx[0], tmp_idx[1], tmp_idx[2])
-
             # convert dz to cm to avoid problems later
             dz *= cm_per_length_unit
 
-            cur_doppler_parameter_b = doppler_parameter_b.get_vals_cm_per_s(idx)
+            doppler_parameter_b.get_vals_cm_per_s(
+                idx3Darr = idx3D_view, out = cur_doppler_parameter_b
+            )
 
             cur_uvec_view = ray_uvec
             with cython.boundscheck(False), cython.wraparound(False):
