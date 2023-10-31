@@ -279,6 +279,14 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
     else:
         out = np.empty(shape = (int(nrays), obs_freq.size), dtype = np.float64)
 
+    # Prefetch some quantities and do some work to figure out unit conversions
+    # ahead of time:
+
+    tmp_ndens_HI_n1state_grid = grid[ndens_HI_n1state_field]
+    # get factor that must be multiplied by this ndens to convert to cm**-3
+    ndens_to_cc_factor = float(tmp_ndens_HI_n1state_grid.uq.to('cm**-3').v)
+    ndens_HI_n1state_grid = tmp_ndens_HI_n1state_grid.ndview
+
     tmp_vx = grid['gas', 'velocity_x']
     tmp_vy = grid['gas', 'velocity_y']
     tmp_vz = grid['gas', 'velocity_z']
@@ -298,6 +306,18 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
 
     cdef Py_ssize_t i
 
+    # some additional optimizations are definitely still possible:
+    # - deal with the doppler_parameter_b calculation (so that we are no longer
+    #   calling a python function within the for-loop or dealing with
+    #   unyt-operations inside the for-loop). Not sure how much difference the
+    #   branch (when doppler_parameter_b is None) makes, but we could use
+    #   fused_types for conditional compilation (or we could just drop support
+    #   for the fixed doppler_parameter_b)
+    # - we can redefine traverse_grid so that it is a cpdef-ed function (avoid
+    #   python overhead)
+    # - we can preallocate buffers for storing the data along rays. Then we can
+    #   avoid using numpy's fancy-indexing and directly index ourselves
+
     try:
         for i in range(nrays):
             ray_start = full_ray_start[i,:]
@@ -315,7 +335,6 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
 
             # convert dz to cm to avoid problems later
             dz *= cm_per_length_unit
-            dz = unyt.unyt_array(dz, 'cm')
 
             # compute the velocity component (this has units of cm/s, but is a
             # regular numpy array. We should probably confirm correctness of
@@ -332,15 +351,15 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
             else:
                 cur_doppler_parameter_b = doppler_parameter_b.to('cm/s')
 
-            ndens_HI_n1state = grid[ndens_HI_n1state_field][idx].to('cm**-3')
+            ndens_HI_n1state = ndens_HI_n1state_grid[idx] * ndens_to_cc_factor
 
             _generate_ray_spectrum_cy(
                 obs_freq = _obs_freq_view,
                 velocities = vlos,
-                ndens_HI_n1state = ndens_HI_n1state.ndview,
+                ndens_HI_n1state = ndens_HI_n1state,
                 doppler_parameter_b = cur_doppler_parameter_b.ndview,
                 rest_freq = _rest_freq_Hz,
-                dz = dz.ndarray_view(),
+                dz = dz,
                 A10_Hz = _A10_Hz,
                 out = _out_view[i,:])
     except:
