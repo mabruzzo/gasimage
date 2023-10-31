@@ -346,44 +346,6 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                           ndens_HI_n1state_field = ('gas',
                                                     'H_p0_number_density'),
                           out = None):
-    check_consistent_arg_dims(obs_freq, unyt.dimensions.frequency, 'obs_freq')
-    assert obs_freq.ndim == 1
-
-    nrays = full_ray_uvec.shape[0]
-    if out is not None:
-        assert out.shape == (nrays, obs_freq.size)
-    else:
-        out = np.empty(shape = (nrays, obs_freq.size), dtype = np.float64)
-
-    if doppler_parameter_b is None:
-        doppler_parameter_b = DopplerParameterFromTemperatureMMW(grid)
-    else:
-        doppler_parameter_b = ScalarDopplerParameter(doppler_parameter_b)
-
-    return _generate_ray_spectrum(
-        grid = grid, grid_left_edge = grid_left_edge,
-        grid_right_edge = grid_right_edge,
-        cell_width = cell_width, grid_shape = grid_shape,
-        cm_per_length_unit = cm_per_length_unit,
-        full_ray_start = full_ray_start, full_ray_uvec = full_ray_uvec,
-        rest_freq = rest_freq, obs_freq = obs_freq,
-        doppler_parameter_b = doppler_parameter_b,
-        ndens_HI_n1state_field = ndens_HI_n1state_field,
-        out = out)
-
-
-def _generate_ray_spectrum(object grid, object grid_left_edge,
-                           object grid_right_edge,
-                           object cell_width, object grid_shape,
-                           object cm_per_length_unit,
-                           object full_ray_start,
-                           object full_ray_uvec,
-                           object rest_freq,
-                           object obs_freq,
-                           FusedDopplerParameterType doppler_parameter_b,
-                           object ndens_HI_n1state_field,
-                           object out):
-
     # By default, ``ndens_HI_n1state_field`` is set to the yt-field specifying
     # the number density of all neutral Hydrogen. See the docstring of
     # optically_thin_ppv for further discussion about this approximation
@@ -391,6 +353,16 @@ def _generate_ray_spectrum(object grid, object grid_left_edge,
     # do NOT use ``grid`` to access length-scale information. This will really
     # mess some things up related to rescale_length_factor
 
+    check_consistent_arg_dims(obs_freq, unyt.dimensions.frequency, 'obs_freq')
+    assert obs_freq.ndim == 1
+    assert str(obs_freq.units) == 'Hz'
+    cdef const double[::1] _obs_freq_Hz_view = obs_freq.ndview
+
+    nrays = full_ray_uvec.shape[0]
+    if out is not None:
+        assert out.shape == (nrays, obs_freq.size)
+    else:
+        out = np.empty(shape = (nrays, obs_freq.size), dtype = np.float64)
 
     # Prefetch some quantities and do some work to figure out unit conversions
     # ahead of time:
@@ -399,6 +371,8 @@ def _generate_ray_spectrum(object grid, object grid_left_edge,
     # get factor that must be multiplied by this ndens to convert to cm**-3
     ndens_to_cc_factor = float(tmp_ndens_HI_n1state_grid.uq.to('cm**-3').v)
     ndens_HI_n1state_grid = tmp_ndens_HI_n1state_grid.ndview
+
+    # load in velocity information:
 
     tmp_vx = grid['gas', 'velocity_x']
     tmp_vy = grid['gas', 'velocity_y']
@@ -409,9 +383,40 @@ def _generate_ray_spectrum(object grid, object grid_left_edge,
     # now, get versions of velocity components without units
     vx, vy, vz = tmp_vx.ndview, tmp_vy.ndview, tmp_vz.ndview
 
-    assert str(obs_freq.units) == 'Hz'
-    cdef const double[::1] _obs_freq_view = obs_freq.ndview
-    cdef double[:,::1] _out_view = out
+
+    if doppler_parameter_b is None:
+        doppler_parameter_b = DopplerParameterFromTemperatureMMW(grid)
+    else:
+        doppler_parameter_b = ScalarDopplerParameter(doppler_parameter_b)
+
+    return _generate_ray_spectrum(
+        grid_left_edge = grid_left_edge,
+        grid_right_edge = grid_right_edge,
+        cell_width = cell_width, grid_shape = grid_shape,
+        cm_per_length_unit = cm_per_length_unit,
+        full_ray_start = full_ray_start, full_ray_uvec = full_ray_uvec,
+        rest_freq = rest_freq,
+        obs_freq_Hz = _obs_freq_Hz_view,
+        vx = vx, vy = vy, vz = vz,
+        vel_to_cm_per_s_factor = vel_to_cm_per_s_factor,
+        doppler_parameter_b = doppler_parameter_b,
+        ndens_HI_n1state_grid = ndens_HI_n1state_grid,
+        ndens_to_cc_factor = ndens_to_cc_factor,
+        out = out)
+
+
+def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
+                           object cell_width, object grid_shape,
+                           object cm_per_length_unit,
+                           object full_ray_start, object full_ray_uvec,
+                           object rest_freq,
+                           double[::1] obs_freq_Hz,
+                           object vx, object vy, object vz,
+                           object vel_to_cm_per_s_factor,
+                           FusedDopplerParameterType doppler_parameter_b,
+                           object ndens_HI_n1state_grid,
+                           object ndens_to_cc_factor,
+                           double[:,::1] out):
 
     spin_flip_props = default_spin_flip_props()
     cdef double _A10_Hz = float(spin_flip_props.A10_quantity.to('Hz').v)
@@ -456,14 +461,14 @@ def _generate_ray_spectrum(object grid, object grid_left_edge,
             ndens_HI_n1state = ndens_HI_n1state_grid[idx] * ndens_to_cc_factor
 
             _generate_ray_spectrum_cy(
-                obs_freq = _obs_freq_view,
+                obs_freq = obs_freq_Hz,
                 velocities = vlos,
                 ndens_HI_n1state = ndens_HI_n1state,
                 doppler_parameter_b = cur_doppler_parameter_b,
                 rest_freq = _rest_freq_Hz,
                 dz = dz,
                 A10_Hz = _A10_Hz,
-                out = _out_view[i,:])
+                out = out[i,:])
     except:
         print('There was a problem!')
         pairs = [('line_uvec', ray_uvec),
