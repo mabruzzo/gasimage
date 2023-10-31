@@ -279,9 +279,14 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
     else:
         out = np.empty(shape = (int(nrays), obs_freq.size), dtype = np.float64)
 
-    vx_vals = grid['gas', 'velocity_x']
-    vy_vals = grid['gas', 'velocity_y']
-    vz_vals = grid['gas', 'velocity_z']
+    tmp_vx = grid['gas', 'velocity_x']
+    tmp_vy = grid['gas', 'velocity_y']
+    tmp_vz = grid['gas', 'velocity_z']
+    assert ((tmp_vx.units == tmp_vy.units) and (tmp_vx.units == tmp_vx.units))
+    # compute the factor that must be multiplied by velocity to convert to cm/s
+    vel_to_cm_per_s_factor = float(tmp_vx.uq.to('cm/s').v)
+    # now, get versions of velocity components without units
+    vx, vy, vz = tmp_vx.ndview, tmp_vy.ndview, tmp_vz.ndview
 
     assert str(obs_freq.units) == 'Hz'
     cdef const double[::1] _obs_freq_view = obs_freq.ndview
@@ -312,11 +317,12 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
             dz *= cm_per_length_unit
             dz = unyt.unyt_array(dz, 'cm')
 
-            # compute the velocity component. We should probably confirm
-            # correctness of the velocity sign
-            vlos = (ray_uvec[0] * vx_vals[idx] +
-                    ray_uvec[1] * vy_vals[idx] +
-                    ray_uvec[2] * vz_vals[idx]).to('cm/s')
+            # compute the velocity component (this has units of cm/s, but is a
+            # regular numpy array. We should probably confirm correctness of
+            # the velocity sign
+            vlos = (ray_uvec[0] * vx[idx] +
+                    ray_uvec[1] * vy[idx] +
+                    ray_uvec[2] * vz[idx]) * vel_to_cm_per_s_factor
 
             if doppler_parameter_b is None:
                 # it might be more sensible to make doppler_parameter_b into a
@@ -330,7 +336,7 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
 
             _generate_ray_spectrum_cy(
                 obs_freq = _obs_freq_view,
-                velocities = vlos.ndview,
+                velocities = vlos,
                 ndens_HI_n1state = ndens_HI_n1state.ndview,
                 doppler_parameter_b = cur_doppler_parameter_b.ndview,
                 rest_freq = _rest_freq_Hz,
