@@ -167,7 +167,7 @@ cpdef _generate_ray_spectrum_cy(const double[::1] obs_freq,
                                 const double[:] doppler_parameter_b,
                                 const double[:] dz,
                                 double rest_freq, double A10_Hz,
-                                double[:] out):
+                                double[::1] out):
     """
     Compute specific intensity (aka monochromatic intensity) from data measured
     along the path of a single ray.
@@ -273,12 +273,11 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
     assert obs_freq.ndim == 1
 
 
-    nrays = full_ray_uvec.shape[0]
+    cdef Py_ssize_t nrays = full_ray_uvec.shape[0]
     if out is not None:
-        assert out.shape == (nrays, obs_freq.size)
+        assert out.shape == (int(nrays), obs_freq.size)
     else:
-        out = np.empty(shape = (nrays, obs_freq.size),
-                       dtype = np.float64)
+        out = np.empty(shape = (int(nrays), obs_freq.size), dtype = np.float64)
 
     vx_vals = grid['gas', 'velocity_x']
     vy_vals = grid['gas', 'velocity_y']
@@ -286,10 +285,13 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
 
     assert str(obs_freq.units) == 'Hz'
     cdef const double[::1] _obs_freq_view = obs_freq.ndview
+    cdef double[:,::1] _out_view = out
 
     spin_flip_props = default_spin_flip_props()
     cdef double _A10_Hz = float(spin_flip_props.A10_quantity.to('Hz').v)
     cdef double _rest_freq_Hz = float(spin_flip_props.freq_quantity.to('Hz').v)
+
+    cdef Py_ssize_t i
 
     try:
         for i in range(nrays):
@@ -334,7 +336,7 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                 rest_freq = _rest_freq_Hz,
                 dz = dz.ndarray_view(),
                 A10_Hz = _A10_Hz,
-                out = out[i,:])
+                out = _out_view[i,:])
     except:
         print('There was a problem!')
         pairs = [('line_uvec', ray_uvec),
