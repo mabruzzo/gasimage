@@ -161,13 +161,13 @@ def full_line_profile_evaluation(obs_freq, doppler_parameter_b,
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-def _generate_ray_spectrum_cy(const double[:] obs_freq,
-                              const double[:] velocities,
-                              const double[:] ndens_HI_n1state,
-                              const double[:] doppler_parameter_b,
-                              const double[:] dz,
-                              double rest_freq, double A10_Hz,
-                              double[:] out):
+cpdef _generate_ray_spectrum_cy(const double[::1] obs_freq,
+                                const double[:] velocities,
+                                const double[:] ndens_HI_n1state,
+                                const double[:] doppler_parameter_b,
+                                const double[:] dz,
+                                double rest_freq, double A10_Hz,
+                                double[:] out):
     """
     Compute specific intensity (aka monochromatic intensity) from data measured
     along the path of a single ray.
@@ -252,6 +252,7 @@ def _generate_ray_spectrum_cy(const double[:] obs_freq,
 from ._ray_intersections_cy import traverse_grid
 from .generate_ray_spectrum import _calc_doppler_parameter_b
 from .rt_config import default_spin_flip_props
+from .utils.misc import check_consistent_arg_dims
     
 def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                           cell_width, grid_shape, cm_per_length_unit,
@@ -268,19 +269,27 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
     # do NOT use ``grid`` to access length-scale information. This will really
     # mess some things up related to rescale_length_factor
 
+    check_consistent_arg_dims(obs_freq, unyt.dimensions.frequency, 'obs_freq')
+    assert obs_freq.ndim == 1
+
+
     nrays = full_ray_uvec.shape[0]
     if out is not None:
-        assert out.shape == ((nrays,) + obs_freq.shape)
+        assert out.shape == (nrays, obs_freq.size)
     else:
         out = np.empty(shape = (nrays, obs_freq.size),
                        dtype = np.float64)
-    assert str(obs_freq.units) == 'Hz'
 
     vx_vals = grid['gas', 'velocity_x']
     vy_vals = grid['gas', 'velocity_y']
     vz_vals = grid['gas', 'velocity_z']
 
+    assert str(obs_freq.units) == 'Hz'
+    cdef const double[::1] _obs_freq_view = obs_freq.ndview
+
     spin_flip_props = default_spin_flip_props()
+    cdef double _A10_Hz = float(spin_flip_props.A10_quantity.to('Hz').v)
+    cdef double _rest_freq_Hz = float(spin_flip_props.freq_quantity.to('Hz').v)
 
     try:
         for i in range(nrays):
@@ -318,13 +327,13 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
             ndens_HI_n1state = grid[ndens_HI_n1state_field][idx].to('cm**-3')
 
             _generate_ray_spectrum_cy(
-                obs_freq = obs_freq.ndview,
+                obs_freq = _obs_freq_view,
                 velocities = vlos.ndview,
                 ndens_HI_n1state = ndens_HI_n1state.ndview,
                 doppler_parameter_b = cur_doppler_parameter_b.ndview,
-                rest_freq = float(spin_flip_props.freq_quantity.v),
+                rest_freq = _rest_freq_Hz,
                 dz = dz.ndarray_view(),
-                A10_Hz = spin_flip_props.A10_quantity.to('Hz').v,
+                A10_Hz = _A10_Hz,
                 out = out[i,:])
     except:
         print('There was a problem!')
