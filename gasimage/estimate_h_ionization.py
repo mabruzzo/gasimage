@@ -469,7 +469,7 @@ class EnzoEUsefulFieldAdder:
             metal_density_field = metal_density_field)
 
         self.create_nHI_field_gracklemmw_kwargs = {
-            'field_name' : HI_field_name,
+            'field_name' : ndens_HI_field_name,
             'globally_fixed_metallicity' : globally_fixed_metallicity,
             'metal_density_field' : metal_density_field,
             'ionization_case' : ionization_case,
@@ -483,8 +483,8 @@ class EnzoEUsefulFieldAdder:
         # I should really work on improving the yt-frontend to make sure it's
         # defined automatically for us!
 
-        if ( (('enzoe','temperature') in ds.field_info) and
-             (('gas','temperature') not in ds.field_info) ):
+        if ( (('enzoe','temperature') in ds.field_list) and
+             (('gas','temperature') not in ds.field_list) ):
             print("The ('gas','temperature') doesn't exist. So we're defining "
                   "it using the ('enzoe','temperature') field")
 
@@ -498,7 +498,7 @@ class EnzoEUsefulFieldAdder:
             ds.add_field(('gas', 'temperature'), function = _temperature,
                          sampling_type = 'local', take_log = True, units = 'K')
 
-        elif ('gas','temperature') not in ds.field_info:
+        elif ('gas','temperature') not in ds.field_list:
             warnings.warn("The ('gas','temperature') field doesn't exist and "
                           "can't easily be defined. You are probably going to "
                           "run into issues during ray-tracing")
