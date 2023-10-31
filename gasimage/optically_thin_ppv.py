@@ -93,17 +93,12 @@ class Worker:
         cell_width = ((right_edge - left_edge)/np.array(grid.shape))
 
         # now actually process the rays
-        for i in range(ray_uvec.shape[0]):
-            cur_ray_start = ray_start[i,:]
-            cur_ray_uvec = ray_uvec[i,:]
-
-            # generate the spectrum
-            generate_ray_spectrum(
-                grid, grid_left_edge = left_edge, grid_right_edge = right_edge,
-                cell_width = cell_width, grid_shape = grid_shape,
-                ray_start = cur_ray_start, ray_uvec = cur_ray_uvec,
-                obs_freq = self.obs_freq, out = out[i,:],
-                **self.generate_ray_spectrum_kwargs
+        generate_ray_spectrum(
+            grid, grid_left_edge = left_edge, grid_right_edge = right_edge,
+            cell_width = cell_width, grid_shape = grid_shape,
+            full_ray_start = ray_start, full_ray_uvec = ray_uvec,
+            obs_freq = self.obs_freq, out = out,
+            **self.generate_ray_spectrum_kwargs
             )
         grid.clear_data()
         del grid

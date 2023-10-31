@@ -219,7 +219,7 @@ def _calc_doppler_parameter_b(grid,idx):
 
 def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                           cell_width, grid_shape, cm_per_length_unit,
-                          ray_start, ray_uvec,
+                          full_ray_start, full_ray_uvec,
                           rest_freq, obs_freq, doppler_parameter_b = None,
                           ndens_HI_n1state_field = ('gas',
                                                     'H_p0_number_density'),
@@ -233,20 +233,25 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
     # do NOT use ``grid`` to access length-scale information. This will really
     # mess some things up related to rescale_length_factor
 
+    nrays = full_ray_uvec.shape[0]
     if out is not None:
-        assert out.shape == obs_freq.shape
+        assert out.shape == ((nrays,) + obs_freq.shape)
     else:
-        out = np.empty_like(obs_freq)
+        out = np.empty(shape = (nrays, obs_freq.size),
+                       dtype = np.float64)
     assert str(obs_freq.units) == 'Hz'
 
-    vx_field,vy_field,vz_field = (
-        ('gas','velocity_x'), ('gas','velocity_y'), ('gas','velocity_z')
-    )
+    vx_vals = grid['gas', 'velocity_x']
+    vy_vals = grid['gas', 'velocity_y']
+    vz_vals = grid['gas', 'velocity_z']
 
     spin_flip_props = default_spin_flip_props()
 
-    if True:
-        try:
+    try:
+        for i in range(nrays):
+            ray_start = full_ray_start[i,:]
+            ray_uvec = full_ray_uvec[i,:]
+
             tmp_idx, dz = traverse_grid(
                 line_uvec = ray_uvec,
                 line_start = ray_start,
@@ -254,64 +259,65 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
                 cell_width = cell_width,
                 grid_shape = grid_shape
             )
-        except:
-            print('There was a problem!')
-            pairs = [('line_uvec', ray_uvec),
-                     ('line_start', ray_start),
-                     ('grid_left_edge', grid_left_edge),
-                     ('cell_width', cell_width)]
-            for name, arr in pairs:
-                arr_str = np.array2string(arr, floatmode = 'unique')
-                print(f'{name} = {arr_str}')
-            print(f'grid_shape = {np.array2string(np.array(grid_shape))}')
-            raise
 
-        idx = (tmp_idx[0], tmp_idx[1], tmp_idx[2])
+            idx = (tmp_idx[0], tmp_idx[1], tmp_idx[2])
 
-        # convert dz to cm to avoid problems later
-        dz *= cm_per_length_unit
-        dz = unyt.unyt_array(dz, 'cm')
+            # convert dz to cm to avoid problems later
+            dz *= cm_per_length_unit
+            dz = unyt.unyt_array(dz, 'cm')
 
-        # compute the velocity component. We should probably confirm
-        # correctness of the velocity sign
-        vlos = (ray_uvec[0] * grid[vx_field][idx] +
-                ray_uvec[1] * grid[vy_field][idx] +
-                ray_uvec[2] * grid[vz_field][idx]).to('cm/s')
+            # compute the velocity component. We should probably confirm
+            # correctness of the velocity sign
+            vlos = (ray_uvec[0] * vx_vals[idx] +
+                    ray_uvec[1] * vy_vals[idx] +
+                    ray_uvec[2] * vz_vals[idx]).to('cm/s')
 
-        if doppler_parameter_b is None:
-            # it might be more sensible to make doppler_parameter_b into a field
-            cur_doppler_parameter_b = _calc_doppler_parameter_b(grid,idx).to('cm/s')
-        else:
-            cur_doppler_parameter_b = doppler_parameter_b.to('cm/s')
+            if doppler_parameter_b is None:
+                # it might be more sensible to make doppler_parameter_b into a
+                # field
+                cur_doppler_parameter_b = _calc_doppler_parameter_b(
+                    grid,idx).to('cm/s')
+            else:
+                cur_doppler_parameter_b = doppler_parameter_b.to('cm/s')
 
-        ndens_HI_n1state = grid[ndens_HI_n1state_field][idx].to('cm**-3')
+            ndens_HI_n1state = grid[ndens_HI_n1state_field][idx].to('cm**-3')
 
-        if use_cython_gen_spec:
-            # There were bugs in this version of the method
-            raise RuntimeError(
-                "The cythonized version has not been properly tested (it may "
-                "not return correct results)"
-            )
-            _generate_ray_spectrum_cy(
-                obs_freq = obs_freq.ndarray_view(),
-                velocities = vlos.ndarray_view(),
-                ndens_HI_n1state = ndens_HI_n1state.ndarray_view(),
-                doppler_parameter_b = cur_doppler_parameter_b.ndarray_view(),
-                rest_freq = float(rest_freq.v),
-                dz = dz.ndarray_view(),
-                A10_Hz = spin_flip_props.A10_quantity.to('Hz').v,
-                out = out)
-        else:
-            out[:] = _generate_ray_spectrum_py(
-                obs_freq = obs_freq, velocities = vlos,
-                ndens_HI_n1state = grid[ndens_HI_n1state_field][idx],
-                doppler_parameter_b = cur_doppler_parameter_b,
-                rest_freq = spin_flip_props.freq_quantity,
-                dz = dz,
-                A10 = spin_flip_props.A10_quantity,
-                only_spontaneous_emission = True,
-                level_pops_from_stat_weights = True,
-                ignore_natural_broadening = True)
+            if use_cython_gen_spec:
+                raise RuntimeError(
+                    "The cythonized version has not been properly tested (it "
+                    "may not return correct results)"
+                )
+                _generate_ray_spectrum_cy(
+                    obs_freq = obs_freq.ndview,
+                    velocities = vlos.ndview,
+                    ndens_HI_n1state = ndens_HI_n1state.ndview,
+                    doppler_parameter_b = cur_doppler_parameter_b.ndview,
+                    rest_freq = float(spin_flip_props.freq_quantity.v),
+                    dz = dz.ndarray_view(),
+                    A10_Hz = spin_flip_props.A10_quantity.to('Hz').v,
+                    out = out[i,:])
+            else:
+                out[i,:] = _generate_ray_spectrum_py(
+                    obs_freq = obs_freq, velocities = vlos,
+                    ndens_HI_n1state = grid[ndens_HI_n1state_field][idx],
+                    doppler_parameter_b = cur_doppler_parameter_b,
+                    rest_freq = spin_flip_props.freq_quantity,
+                    dz = dz,
+                    A10 = spin_flip_props.A10_quantity,
+                    only_spontaneous_emission = True,
+                    level_pops_from_stat_weights = True,
+                    ignore_natural_broadening = True)
+    except:
+        print('There was a problem!')
+        pairs = [('line_uvec', ray_uvec),
+                 ('line_start', ray_start),
+                 ('grid_left_edge', grid_left_edge),
+                 ('cell_width', cell_width)]
+        for name, arr in pairs:
+            arr_str = np.array2string(arr, floatmode = 'unique')
+            print(f'{name} = {arr_str}')
+        print(f'grid_shape = {np.array2string(np.array(grid_shape))}')
+        raise
     return out
 
 
