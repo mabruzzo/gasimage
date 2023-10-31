@@ -78,7 +78,7 @@ class SimpleCubeInfo:
 
         if unyt_arr:
             # create a view of the underlying data:
-            return unyt.unyt_array(ra, units), unyt.unyt_arr(dec, units)
+            return unyt.unyt_array(ra, units), unyt.unyt_array(dec, units)
         return ra,dec
 
     def get_v_channels(self, cube_shape, units = 'm/s', ndim = 1,

@@ -6,7 +6,7 @@ import unyt
 
 from gasimage.optically_thin_ppv import convert_intensity_to_Tb
 from gasimage.snapdsinit import SnapDatasetInitializer
-from gasimage.utils.fits import write_to_fits
+from gasimage.utils.fits import write_to_fits, read_cube_from_fits
 from gasimage.utils.generate_image import generate_image_arr
 from gasimage.utils.testing import assert_allclose_units
 
@@ -84,34 +84,40 @@ def _create_raw_ppv_and_save_fits(enzoe_sim_path, out_fname,
                   v_channels = v_channels, rest_freq = _REF_REST_FREQ,
                   writeto_kwargs = {'overwrite' : clobber_file})
 
-def read_ppv_from_disk(fname):
-    # returns a position-position-velocity datacube where:
-    #  - axis 0 of the output array varies in velocity
-    #  - axis 1 of the output array varies in declination (or sky latitude)
-    #  - axis 2 of the output array varies in right ascension (or sky longitude)
-    #
-    # This sort of output implicitly assumes a cartesian projection.
-
-    from astropy.io import fits
-    
-    with fits.open(fname, mode = 'readonly') as hdul:
-        if len(hdul) != 1:
-            raise ValueError("only equipped to handle fits files with one "
-                             "HDU (Header Data Unit)") 
-        hdu = hdul[0]
-        hdr = hdu.header
-
-        # sanity check (note that the WCS object stores things in reverse
-        # compared to the numpy shape ordering)
-
-        data = hdu.data[...]
-        if hdr.get('BUNIT', None) == 'K (Tb)':
-            data = unyt.unyt_array(data, 'K')
-        return data
-
 def _compare_results(cur_fname, ref_fname, err_msg, **kw):
-    cur_arr = read_ppv_from_disk(cur_fname)
-    ref_arr = read_ppv_from_disk(ref_fname)
+    # note: I think that writing to disk encodes the data to 32bits (even
+    # though most calculations are in 64 bits), so minor changes won't
+    # necessarily show up.
+
+    cur_arr, cur_cubeinfo = read_cube_from_fits(cur_fname,
+                                                default_v_units = None)
+    ref_arr, ref_cubeinfo = read_cube_from_fits(ref_fname,
+                                                default_v_units = None)
+    # I suspect that the cubeinfo objects may not be exactly equal if the
+    # reference file is fairly old because at one point we changed,
+    # what the name of the velocity axis is recorded as.
+    # -> the old choice didn't specify whether velocity scales linearly with
+    #    wavelength or frequency. Our new choice now specifies that it scales
+    #    linearly with frequency (I really don't think it matters unless the
+    #    cloud moves at relativistic speeds)
+
+    # We can still do some crude sanity-checks on the cubeinfo:
+    # NOTE: don't expect the input ra,dec, and v_channels info to be exactly
+    #       equal to the stuff encoded in the cubeinfo object. While the
+    #       cubeinfo objects will losslessly round-trip, coercing the inputs
+    #       into a cubeinfo object is somewhat lossy
+    ref_ra, ref_dec = ref_cubeinfo.get_ra_dec(ref_arr.shape, units = 'deg',
+                                              ndim = 1, unyt_arr = True)
+    ref_v_channels = ref_cubeinfo.get_v_channels(ref_arr.shape, units = 'm/s',
+                                                 ndim = 1, unyt_arr = True)
+    cur_ra, cur_dec = cur_cubeinfo.get_ra_dec(cur_arr.shape, units = 'deg',
+                                              ndim = 1, unyt_arr = True)
+    cur_v_channels = cur_cubeinfo.get_v_channels(cur_arr.shape, units = 'm/s',
+                                                 ndim = 1, unyt_arr = True)
+    assert (cur_ra == ref_ra).all()
+    assert (cur_dec == ref_dec).all()
+    assert (cur_v_channels == ref_v_channels).all()
+
     assert_allclose_units(actual = cur_arr, desired = ref_arr,
                           err_msg = err_msg, **kw)
 
