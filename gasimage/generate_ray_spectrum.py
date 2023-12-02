@@ -188,8 +188,7 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI_n1state,
     else:
         raise RuntimeError("support hasn't been added for this configuration")
 
-def generate_ray_spectrum_legacy(grid, grid_left_edge, grid_right_edge,
-                                 cell_width, grid_shape, cm_per_length_unit,
+def generate_ray_spectrum_legacy(grid, spatial_grid_props, cm_per_length_unit,
                                  full_ray_start, full_ray_uvec,
                                  rest_freq, obs_freq,
                                  doppler_parameter_b = None,
@@ -203,6 +202,11 @@ def generate_ray_spectrum_legacy(grid, grid_left_edge, grid_right_edge,
 
     # do NOT use ``grid`` to access length-scale information. This will really
     # mess some things up related to rescale_length_factor
+
+    grid_left_edge = spatial_grid_props.left_edge
+    grid_right_edge = spatial_grid_props.right_edge
+    cell_width = spatial_grid_props.cell_width
+    grid_shape = spatial_grid_props.grid_shape
 
     nrays = full_ray_uvec.shape[0]
     if out is not None:

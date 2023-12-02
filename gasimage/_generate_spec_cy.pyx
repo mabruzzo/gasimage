@@ -420,8 +420,7 @@ def _calc_doppler_parameter_b(grid,idx3Darr, approach = None):
         raise RuntimeError("SOMETHING IS WRONG")
     return out * (unyt.cm/unyt.s)
 
-def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
-                          cell_width, grid_shape, cm_per_length_unit,
+def generate_ray_spectrum(grid, spatial_grid_props, cm_per_length_unit,
                           full_ray_start, full_ray_uvec,
                           rest_freq, obs_freq,
                           doppler_parameter_b = None,
@@ -434,6 +433,11 @@ def generate_ray_spectrum(grid, grid_left_edge, grid_right_edge,
 
     # do NOT use ``grid`` to access length-scale information. This will really
     # mess some things up related to rescale_length_factor
+
+    grid_left_edge = spatial_grid_props.left_edge
+    grid_right_edge = spatial_grid_props.right_edge
+    cell_width = spatial_grid_props.cell_width
+    grid_shape = spatial_grid_props.grid_shape
 
     check_consistent_arg_dims(obs_freq, unyt.dimensions.frequency, 'obs_freq')
     assert obs_freq.ndim == 1

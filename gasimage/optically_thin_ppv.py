@@ -1,5 +1,5 @@
 import datetime
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Set, Tuple, Any
 
 import numpy as np
 import unyt
@@ -23,6 +23,104 @@ from .generate_ray_spectrum import generate_ray_spectrum_legacy
 from ._generate_spec_cy import generate_ray_spectrum
 from .ray_collection import ConcreteRayList
 from .utils.misc import _has_consistent_dims
+
+class SpatialGridProps:
+    """
+    This collects spatial properties of the current block (or grid) of the
+    dataset
+
+    Notes
+    -----
+    The original motivation for doing this was to allow rescaling of the grid
+    in adiabatic simulations. It's unclear whether that functionality still
+    works properly (it definitely hasn't been tested in all contexts).
+    """
+    grid_shape: np.ndarray
+    left_edge: np.ndarray
+    right_edge: np.ndarray
+    cell_width: np.ndarray
+
+    def __init__(self, *, grid_shape: np.ndarray,
+                 grid_left_edge: unyt.unyt_array,
+                 grid_right_edge: unyt.unyt_array,
+                 length_unit: str,
+                 rescale_factor: float = 1.0):
+
+        assert grid_shape.shape == (3,) and (grid_shape > 0).all()
+        assert issubclass(grid_shape.dtype.type, np.integer)
+        self.grid_shape = grid_shape.copy() # copy it so it owns the data
+
+        assert grid_left_edge.shape == grid_right_edge.shape == (3,)
+        self.left_edge = grid_left_edge.to(length_unit).v * rescale_factor
+        self.right_edge = grid_right_edge.to(length_unit).v * rescale_factor
+        self.cell_width = (
+            (self.right_edge - self.left_edge) / np.array(grid_shape)
+        )
+
+        for attr in ['grid_shape', 'left_edge', 'right_edge', 'cell_width']:
+            getattr(self,attr).flags['WRITEABLE'] = False
+            assert getattr(self,attr).flags['OWNDATA'] == True # sanity check!
+
+
+class OpticallyThinAccumStrat:
+    """
+    Represents the configuration of the operations associated with optically
+    thin Radiative Transfer
+
+    At the moment, this can only be configured to work with the spin-flip
+    transition.
+
+    This is intended to be immutable!
+    """
+
+    # instance attributes:
+    obs_freq_Hz: np.ndarray
+    use_cython_gen_spec: bool
+    # todo remove misc_kwargs and replace with more details
+    misc_kwargs: Dict[str, Any]
+
+    # class attributes:
+    commutative_consolidate = True
+
+    def __init__(self, *, obs_freq: unyt.unyt_array,
+                 use_cython_gen_spec: bool,
+                 misc_kwargs: Dict[str, Any] = {}):
+        assert np.ndim(obs_freq) == 1
+        assert (obs_freq.size > 0) and (obs_freq.ndview > 0).all()
+        # make obs_freq_Hz as immutable as possible
+        self.obs_freq_Hz = obs_freq.to('Hz').ndview.copy()
+        self.obs_freq_Hz.flags['WRITEABLE'] = False
+
+        self.use_cython_gen_spec = use_cython_gen_spec
+        self.misc_kwargs = misc_kwargs
+        for key in ['obs_freq', 'grid', 'grid_left_edge', 'grid_right_edge',
+                    'cell_width', 'grid_shape', 'out', 'ray_start', 'ray_uvec',
+                    'full_ray_start', 'full_ray_uvec']:
+            if key in misc_kwargs:
+                raise ValueError(f"'{key}' should not be a key of misc_kwargs")
+
+    def do_work(self, grid, spatial_grid_props, full_ray_start, full_ray_uvec):
+
+        obs_freq = unyt.unyt_array(self.obs_freq_Hz, 'Hz')
+        out = np.empty(shape = (full_ray_uvec.shape[0], obs_freq.size),
+                       dtype = 'f8')
+
+        if self.use_cython_gen_spec:
+            generate_ray_spectrum(
+                grid = grid, spatial_grid_props = spatial_grid_props,
+                full_ray_start = full_ray_start, full_ray_uvec = full_ray_uvec,
+                obs_freq = obs_freq, out = out, **self.misc_kwargs
+            )
+        else:
+            generate_ray_spectrum_legacy(
+                grid = grid, spatial_grid_props = spatial_grid_props,
+                full_ray_start = full_ray_start, full_ray_uvec = full_ray_uvec,
+                obs_freq = obs_freq, out = out, **self.misc_kwargs
+            )
+
+        return out
+
+
 
 class Worker:
     """
@@ -51,31 +149,17 @@ class Worker:
     TODO: improve this documentation
     TODO: explain somewhat roundabout handling of ds_initializer
     """
-    def __init__(self, ds_initializer, obs_freq, length_unit_name,
-                 rescale_length_factor, use_cython_gen_spec,
-                 generate_ray_spectrum_kwargs):
-        assert np.ndim(obs_freq) == 1
+    def __init__(self, ds_initializer, length_unit_name,
+                 rescale_length_factor, accum_strat):
 
         self.ds_initializer = ds_initializer
-        self.obs_freq = obs_freq
         self.length_unit_name = length_unit_name
         self.rescale_length_factor = rescale_length_factor
-        self.use_cython_gen_spec = use_cython_gen_spec
-
-        for key in ['obs_freq', 'grid', 'grid_left_edge', 'grid_right_edge',
-                    'cell_width', 'grid_shape', 'out', 'ray_start', 'ray_uvec']:
-            if key in generate_ray_spectrum_kwargs:
-                raise ValueError(f"'{key}' should not be a key of "
-                                 "generate_ray_spectrum_kwargs")
-        self.generate_ray_spectrum_kwargs = generate_ray_spectrum_kwargs
-
+        self.accum_strat = accum_strat
 
     def __call__(self, elem):
         grid_index, ray_start, ray_uvec = elem
         assert (ray_uvec.ndim == 2) and ray_uvec.shape[1] == 3
-
-        out = np.empty(shape = (ray_uvec.shape[0], self.obs_freq.size),
-                       dtype = np.float64)
 
         # load the dataset
         _ds_initializer = self.ds_initializer
@@ -86,32 +170,24 @@ class Worker:
 
         # load properties about the current block of the dataset
         grid = ds.index.grids[grid_index]
-        grid_shape = ds.index.grid_dimensions[grid_index]
-        left_edge \
-            = ds.index.grid_left_edge[grid_index].to(self.length_unit_name).v
-        right_edge \
-            = ds.index.grid_right_edge[grid_index].to(self.length_unit_name).v
-        left_edge *= self.rescale_length_factor
-        right_edge *= self.rescale_length_factor
-        cell_width = ((right_edge - left_edge)/np.array(grid.shape))
+
+        # sanity check!
+        assert (np.array(grid.shape) ==
+                ds.index.grid_dimensions[grid_index]).all()
+
+        spatial_grid_props = SpatialGridProps(
+            grid_shape = ds.index.grid_dimensions[grid_index],
+            grid_left_edge = ds.index.grid_left_edge[grid_index],
+            grid_right_edge = ds.index.grid_right_edge[grid_index],
+            length_unit = self.length_unit_name,
+            rescale_factor = self.rescale_length_factor
+        )
 
         # now actually process the rays
-        if self.use_cython_gen_spec:
-            generate_ray_spectrum(
-                grid, grid_left_edge = left_edge, grid_right_edge = right_edge,
-                cell_width = cell_width, grid_shape = grid_shape,
-                full_ray_start = ray_start, full_ray_uvec = ray_uvec,
-                obs_freq = self.obs_freq, out = out,
-                **self.generate_ray_spectrum_kwargs
-            )
-        else:
-            generate_ray_spectrum_legacy(
-                grid, grid_left_edge = left_edge, grid_right_edge = right_edge,
-                cell_width = cell_width, grid_shape = grid_shape,
-                full_ray_start = ray_start, full_ray_uvec = ray_uvec,
-                obs_freq = self.obs_freq, out = out,
-                **self.generate_ray_spectrum_kwargs
-            )
+        out = self.accum_strat.do_work(
+            grid = grid, spatial_grid_props = spatial_grid_props,
+            full_ray_start = ray_start, full_ray_uvec = ray_uvec
+        )
         grid.clear_data()
         del grid
         gc.collect()
@@ -350,22 +426,24 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
                     ray_list.get_selected_raystart_rayuvec(ray_idx)
                 yield grid_ind, ray_start_codeLen, ray_uvec
 
-
-        # create the worker
+        # create the accum_strat
         rest_freq = 1.4204058E+09*unyt.Hz,
-        worker = Worker(
-            ds_initializer = ds,
+        accum_strat = OpticallyThinAccumStrat(
             obs_freq = (rest_freq*(1+v_channels/unyt.c_cgs)).to('Hz'),
-            length_unit_name = length_unit_name,
-            rescale_length_factor = rescale_length_factor,
             use_cython_gen_spec = use_cython_gen_spec,
-            generate_ray_spectrum_kwargs = {
+            misc_kwargs = {
                 'rest_freq' : rest_freq,
                 'cm_per_length_unit' : length_unit_quan.to('cm').v,
                 'doppler_parameter_b' : doppler_parameter_b,
                 'ndens_HI_n1state_field' : ndens_HI_n1state,
             }
         )
+
+        # create the worker        
+        worker = Worker(ds_initializer = ds,
+                        length_unit_name = length_unit_name,
+                        rescale_length_factor = rescale_length_factor,
+                        accum_strat = accum_strat)
 
         # create the output array and callback function
         out_shape = (v_channels.size,) + ray_collection.shape
