@@ -35,16 +35,21 @@ class SpatialGridProps:
     in adiabatic simulations. It's unclear whether that functionality still
     works properly (it definitely hasn't been tested in all contexts).
     """
+    cm_per_length_unit : float
     grid_shape: np.ndarray
     left_edge: np.ndarray
     right_edge: np.ndarray
     cell_width: np.ndarray
 
-    def __init__(self, *, grid_shape: np.ndarray,
+    def __init__(self, *, cm_per_length_unit: float,
+                 grid_shape: np.ndarray,
                  grid_left_edge: unyt.unyt_array,
                  grid_right_edge: unyt.unyt_array,
                  length_unit: str,
                  rescale_factor: float = 1.0):
+
+        assert cm_per_length_unit > 0
+        self.cm_per_length_unit = cm_per_length_unit
 
         assert grid_shape.shape == (3,) and (grid_shape > 0).all()
         assert issubclass(grid_shape.dtype.type, np.integer)
@@ -93,8 +98,7 @@ class OpticallyThinAccumStrat:
 
         self.use_cython_gen_spec = use_cython_gen_spec
         self.misc_kwargs = misc_kwargs
-        for key in ['obs_freq', 'grid', 'grid_left_edge', 'grid_right_edge',
-                    'cell_width', 'grid_shape', 'out', 'ray_start', 'ray_uvec',
+        for key in ['obs_freq', 'grid', 'out', 'ray_start', 'ray_uvec',
                     'full_ray_start', 'full_ray_uvec']:
             if key in misc_kwargs:
                 raise ValueError(f"'{key}' should not be a key of misc_kwargs")
@@ -149,11 +153,12 @@ class Worker:
     TODO: improve this documentation
     TODO: explain somewhat roundabout handling of ds_initializer
     """
-    def __init__(self, ds_initializer, length_unit_name,
+    def __init__(self, ds_initializer, length_unit_name, cm_per_length_unit,
                  rescale_length_factor, accum_strat):
 
         self.ds_initializer = ds_initializer
         self.length_unit_name = length_unit_name
+        self.cm_per_length_unit = cm_per_length_unit
         self.rescale_length_factor = rescale_length_factor
         self.accum_strat = accum_strat
 
@@ -176,6 +181,7 @@ class Worker:
                 ds.index.grid_dimensions[grid_index]).all()
 
         spatial_grid_props = SpatialGridProps(
+            cm_per_length_unit = self.cm_per_length_unit,
             grid_shape = ds.index.grid_dimensions[grid_index],
             grid_left_edge = ds.index.grid_left_edge[grid_index],
             grid_right_edge = ds.index.grid_right_edge[grid_index],
@@ -369,6 +375,18 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
     else:
         rescale_length_factor = 1.0
 
+    # create the accum_strat
+    rest_freq = 1.4204058E+09*unyt.Hz,
+    accum_strat = OpticallyThinAccumStrat(
+        obs_freq = (rest_freq*(1+v_channels/unyt.c_cgs)).to('Hz'),
+        use_cython_gen_spec = use_cython_gen_spec,
+        misc_kwargs = {
+            'rest_freq' : rest_freq,
+            'doppler_parameter_b' : doppler_parameter_b,
+            'ndens_HI_n1state_field' : ndens_HI_n1state,
+        }
+    )
+
     pool = _DummySerialPool() if pool is None else pool
 
     is_mpi_root_proc = (not hasattr(pool,'is_master')) or pool.is_master()
@@ -426,22 +444,10 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
                     ray_list.get_selected_raystart_rayuvec(ray_idx)
                 yield grid_ind, ray_start_codeLen, ray_uvec
 
-        # create the accum_strat
-        rest_freq = 1.4204058E+09*unyt.Hz,
-        accum_strat = OpticallyThinAccumStrat(
-            obs_freq = (rest_freq*(1+v_channels/unyt.c_cgs)).to('Hz'),
-            use_cython_gen_spec = use_cython_gen_spec,
-            misc_kwargs = {
-                'rest_freq' : rest_freq,
-                'cm_per_length_unit' : length_unit_quan.to('cm').v,
-                'doppler_parameter_b' : doppler_parameter_b,
-                'ndens_HI_n1state_field' : ndens_HI_n1state,
-            }
-        )
-
         # create the worker        
         worker = Worker(ds_initializer = ds,
                         length_unit_name = length_unit_name,
+                        cm_per_length_unit = float(length_unit_quan.to('cm').v),
                         rescale_length_factor = rescale_length_factor,
                         accum_strat = accum_strat)
 
