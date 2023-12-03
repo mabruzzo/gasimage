@@ -6,6 +6,7 @@ cimport cython
 
 from libc.math cimport exp as exp_f64
 from libc.math cimport sqrt as sqrt_f64
+from libc.stdlib cimport malloc, free
 
 DEF _INV_SQRT_PI = 0.5641895835477563
 DEF _QUARTER_DIV_PI = 0.07957747154594767
@@ -594,3 +595,317 @@ def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
         print(f'grid_shape = {np.array2string(np.array(grid_shape))}')
         raise
     return out
+
+
+####### DOWN HERE WE DEFINE STUFF RELATED TO FULL (NO-SCATTER) RT
+
+"""
+def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
+                                     full_ray_start, full_ray_uvec,
+                                     rest_freq, obs_freq,
+                                     doppler_parameter_b = None,
+                                     ndens_HI_n1state_field = ('gas',
+                                                               'H_p0_number_density'),
+                                     out = None):
+"""
+
+class NdensRatio:
+    hi_div_lo: np.ndarray
+
+def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
+                                    kinetic_T, doppler_parameter_b, dz,
+                                    level_pops_arg):
+    """
+    Compute the specific intensity (aka monochromatic intensity) and optical
+    depth from data measured along the path of a single ray.
+
+    While we only consider the path of a given ray, specific intensity 
+    actually describes a continuum of rays with infintesimal differences.
+    Specific intensity is the amount of energy carried by light in frequency 
+    range $d\nu$, over time $dt$ along the collection of all rays that pass 
+    through a patch of area $dA$ (oriented normal to the given-ray) whose 
+    directions subtend a solid angle of $d\Omega$ around the given-ray.
+
+    For computational convenience, a single call to this function will compute
+    the specific intensity at multiple different frequencies.
+
+    While the result is an ordinary numpy array, the units should be understood
+    to be erg/(cm**2 * Hz * s * steradian).
+
+    Parameters
+    ----------
+    obs_freq : unyt.unyt_array, shape(nfreq,)
+        An array of frequencies to perform rt at.
+    vLOS : unyt.unyt_array, shape(ngas,)
+        Velocities of the gas in cells along the ray (in cm/s).
+    ndens : unyt.unyt_array, shape(ngas,)
+        The number density in cells along the ray (in cm**-3). The exact
+        meaning of this argument depends on ``level_pops_arg``.
+    kinetic_T : unyt.unyt_array, shape(ngas,)
+        Specifies the kinetic temperatures along the ray
+    doppler_parameter_b : unyt.unyt_array, shape(ngas,)
+        The Doppler parameter (aka Doppler broadening parameter) of the gas in
+        cells along the ray, often abbreviated with the variable ``b``. This
+        has units consistent with velocity. ``b/sqrt(2)`` specifies the
+        standard deviation of the line-of-sight velocity component. When this
+        quantity is multiplied by ``rest_freq/unyt.c_cgs``, you get what 
+        Rybicki and Lightman call the "Doppler width". This alternative
+        quantity is a factor of ``sqrt(2)`` larger than the standard deviation
+        of the frequency profile.
+    dz : unyt.unyt_array, shape(ngas,)
+        The distance travelled by the ray through each cell (in cm).
+    level_pops_arg : NdensRatio or callable
+        If this is an instance of NdensRatio, it specifies the ratio of number
+        densities and the ``ndens`` argument is treated as the number density
+        of particles in the lower state. Otherwise this argument must be a 
+        callable (that accepts temperature as an argument) representing the 
+        Partition Function. In this scenario, we assume LTE and treat the 
+        ``ndens`` argument as the number density of all particles described by
+        the partition function.
+
+    Returns
+    -------
+    optical_depth: `numpy.ndarray`, shape(nfreq,ngas+1)
+        Holds the integrated optical depth as a function of frequency computed
+        at the edge of each ray-segment. We define optical depth such that it 
+        is zero at the observer,
+        and such that it increases as we move backwards along the ray (i.e. it
+        increases with distance from the observer)
+    integrated_source: ndarray, shape(nfreq,)
+        Holds the integrated_source function as a function of frequency. This 
+        is also the total intensity if there is no background intensity. If
+        the background intensity is given by ``bkg_intensity`` (an array where
+        theat varies with frequency), then the total intensity is just
+        ``bkg_intensity*np.exp(-tau[:, -1]) + integrated_source``.
+    """
+
+    ndens = ndens.to('cm**-3').ndview
+    kinetic_T = kinetic_T.to('K').ndview
+
+    rest_freq_Hz = line_props.freq_Hz
+
+    # consider 2 states: states 1 and 2.
+    # - State2 is the upper level and State1 is the lower level
+    # - B12 multiplied by average intensity gives the rate of absorption
+    # - A21 gives the rate of spontaneous emission
+
+    B12_cgs = line_props.B_absorption_cgs
+
+    g_1, g_2 = float(line_props.g_lo), float(line_props.g_hi)
+
+    energy_1_erg = line_props.energy_lo_erg
+    restframe_energy_photon_erg = rest_freq_Hz * _H_CGS
+
+    if callable(level_pops_arg):
+        # assume LTE
+        ndens_ion_species = ndens
+        partition_func = level_pops_arg
+        # thermodynamic beta
+        beta_cgs = 1.0 / (kinetic_T * _KBOLTZ_CGS)
+
+        # in this case, treat ndens as number density of particles described by
+        # partition function
+        ndens_1 = (ndens_ion_species * g_1 * np.exp(-energy_1_erg * beta_cgs)
+                   / partition_func(kinetic_T))
+
+        # n1/n2 = (g1/g2) * exp(restframe_energy_photon_cgs * beta_cgs)
+        # n2/n1 = (g2/g1) * exp(-restframe_energy_photon_cgs * beta_cgs)
+        # (n2*g1)/(n1*g2) = exp(-restframe_energy_photon_cgs * beta_cgs)
+        n2g1_div_n1g2 = np.exp(-1 * restframe_energy_photon_erg * beta_cgs)
+
+    else:
+        raise RuntimeError("UNTESTED")
+        assert isinstance(level_pops_arg, NdensRatio)
+        # in this case, treat ndens as number density of lower state
+        ndens_1 = ndens
+        ndens2_div_ndens1 = level_pop_arg.hi_div_lo
+        n2g1_div_n1g2 = ndens2_div_ndens1 * g_1 /g_2
+
+    # compute the line_profiles
+    profiles = full_line_profile_evaluation(
+        obs_freq = obs_freq,
+        doppler_parameter_b = doppler_parameter_b,
+        rest_freq = line_props.freq_quantity,
+        velocity_offset = vLOS)
+
+    # Using equations 1.78 and 1.79 of Rybicki and Lighman to get
+    # - absorption coefficient (with units of cm**-1), including the correction
+    #   for stimulated-emission
+    # - the source function
+    # - NOTE: there are some weird ambiguities in the frequency dependence in
+    #   these equations. These are discussed below.
+    stim_emission_correction = (1.0 - n2g1_div_n1g2)
+    alpha_nu_cgs = (_H_CGS * rest_freq_Hz * ndens_1 * B12_cgs *
+                    stim_emission_correction * profiles.ndview) / (4*np.pi)
+
+    rest_freq3= rest_freq_Hz*rest_freq_Hz*rest_freq_Hz
+    tmp = (1.0/n2g1_div_n1g2) - 1.0
+    source_func_cgs = (2*_H_CGS * rest_freq3 / (_C_CGS * _C_CGS)) / tmp
+
+    # FREQUENCY AMBIGUITIES:
+    # - in Rybicki and Lighman, the notation used in equations 1.78 and 1.79
+    #   suggest that all frequencies used in computing linear_absorption and
+    #   source_function should use the observed frequency (in the
+    #   reference-frame where gas-parcel has no bulk motion)
+    # - currently, we use the line's central rest-frame frequency everywhere
+    #   other than in the calculation of the line profile.
+    #
+    # In the absorption-coefficient, I think our choice is well-motivated!
+    # -> if you look back at the derivation the equation 1.74, it looks seems
+    #    that the leftmost frequency should be the rest_freq (it seems like
+    #    they dropped this along the way and carried it through to 1.78)
+    # -> in the LTE case, they don't use rest-freq in the correction for
+    #    stimulated emission (eqn 1.80). I think what we do in the LTE case is
+    #    more correct.
+    #
+    # Overall, I suspect the reason that Rybicki & Lightman play a little fast
+    # and loose with frequency dependence is the sort of fuzzy assumptions made
+    # when deriving the Einstein relations. (It also helps them arive at result
+    # that source-function is a black-body in LTE)
+    #
+    # At the end of the day, it probably doesn't matter much which frequencies
+    # we use (the advantage of our approach is we can put all considerations of
+    # LOS velocities into the calculation of the line profile)
+
+    tau, integrated_source = solve_noscatter_rt(
+        source_function = source_func_cgs,
+        absorption_coef = alpha_nu_cgs,
+        dz = dz.to('cm').ndview
+    )
+
+    return integrated_source, tau[:,-1]
+
+cpdef solve_noscatter_rt(const double[::1] source_function,
+                         const double[:,:] absorption_coef,
+                         const double[::1] dz):
+    """
+    Solves for the optical depth and the integrated source_function diminished
+    by absorption.
+
+    Each input arg is an array. For each arg, the
+    index of the trailing axis corresponds to position along a ray. 
+      - `arr[...,0]` specifies the value at the location closest to the observer
+      - `arr[...,-1]` specifies the value at the location furthest from the
+        observer.
+    To put it another way, light moves from high index to low index. 
+    Alternatively, as we increase index, we move "backwards along the ray.
+
+    Parameters
+    ----------
+    source_function: `unyt.unyt_array`, shape(ngas)
+        The source function. This is 1D because we only consider line-profile
+        to have frequency dependence. And that term cancels out when computing
+        the source function.
+    absorption_coef: `unyt.unyt_array`, shape(nfreq,ngas)
+        The linear absorption coefficient
+    dz : `unyt.unyt_array`, shape(ngas,)
+        The distance travelled by the ray through each cell (in cm).
+
+    Returns
+    -------
+    optical_depth: `numpy.ndarray`, shape(nfreq,)
+        Holds the integrated optical depth over the entire ray.
+    integrated_source: ndarray, shape(nfreq,)
+        Holds the integrated_source function as a function of frequency. This 
+        is also the total intensity if there is no background intensity. If
+        the background intensity is given by ``bkg_intensity`` (an array where
+        theat varies with frequency), then the total intensity is just
+        ``bkg_intensity*np.exp(-tau[:, -1]) + integrated_source``.
+
+    Notes
+    -----
+    Our definition of optical depth, differs from Rybicki and Lightman. They
+    would define the maximum optical depth at the observer's location. Our
+    choice of definition is a little more consistent with the choice used in
+    the context of stars.
+
+    We are essentially solving the following 2 equations:
+
+    .. math::
+
+      \tau_\nu (s) = \int_{s}^{s_0} \alpha_\nu(s^\prime)\, ds^\prime
+
+    and
+
+    .. math::
+
+      I_\nu (\tau_\nu=0) =  I_\nu(\tau_\nu)\, e^{-\tau_\nu} + f,
+
+    where :math:`f`, the integral term, is given by:
+
+    .. math::
+
+      f = -\int_{\tau_\nu}^0  S_\nu(\tau_\nu^\prime)\, e^{-\tau_\nu^\prime}\, d\tau_\nu^\prime.
+
+    """
+
+    cdef Py_ssize_t num_segments = dz.size
+    cdef Py_ssize_t nfreq = absorption_coef.shape[0]
+    cdef Py_ssize_t freq_i, pos_i
+
+    _tau = np.empty(shape = (nfreq, num_segments + 1), dtype = 'f8')
+    cdef double[:,::1] tau = _tau
+
+    _integral_term = np.zeros(shape=(nfreq,), dtype = 'f8')
+    cdef double[::1] integral_term = _integral_term
+
+    # part 1: solve for tau
+    #
+    # we defined tau so that it is increasing as we move away from the observer
+    #
+    # NOTE: higher indices of dz are also further from observer
+
+    for freq_i in range(nfreq):
+        tau[freq_i, 0] = 0.0
+        for pos_i in range(num_segments):
+            tau[freq_i, pos_i+1] = (tau[freq_i, pos_i] +
+                                    absorption_coef[freq_i,pos_i] * dz[pos_i])
+
+    # we are effectively solving the following integral (dependence on
+    # frequency is dropped to simplify notation)
+    #     f = -∫ S(𝜏) * exp(-𝜏) d𝜏 integrated from 𝜏 to 0
+    # We are integrating the light as it moves from the far end of the ray
+    # towards the observer.
+    #
+    # We can reverse this integral so we are integrating along the ray from
+    # near to far
+    #     f = ∫ S(𝜏) * exp(-𝜏) d𝜏 integrated from 0 to 𝜏
+    #
+    # Now let's break this integral up into N segments
+    #
+    #    f = ∑_(i=0)^(N-1) ∫_i S(𝜏) * exp(-𝜏) d𝜏
+    # - each integral integrates between 𝜏_i and 𝜏_(i+1) (which correspond to
+    #   the tau values at the edges of each segment.
+    #
+    # Now if we assume that S(𝜏) has a constant value S_i we can pull S_i out
+    # of the integral and solve the integral analytically.
+    # ->  ∫ exp(-𝜏) d𝜏 from 𝜏_i to 𝜏_(i+1) is
+    #           -exp(-𝜏_(i+1)) - (-exp(-𝜏_i))
+    #     OR equivalently, it's
+    #           exp(-𝜏_i) - exp(-𝜏_(i+1))
+    #
+    # Putting this togeter, we find that:
+    #    f = ∑_(i=0)^(N-1) S_i * ( exp(-𝜏_i) - exp(-𝜏_(i+1)) )
+
+    cdef double segStart_expNegTau 
+    cdef double segEnd_expNegTau
+
+    cdef double integrated_source, diff
+
+    for freq_i in range(nfreq):
+        integrated_source = 0.0
+
+        # iterate over the segments of the ray
+        segStart_expNegTau = exp_f64(-tau[freq_i, 0]) # should evaluate to 1
+        for pos_i in range(num_segments):
+            segEnd_expNegTau = exp_f64(-tau[freq_i, pos_i+1])
+            diff = segStart_expNegTau - segEnd_expNegTau
+            integrated_source += (source_function[pos_i] * diff)
+
+            # prepare for next segment
+            segStart_expNegTau = segEnd_expNegTau
+
+        # record the integrated quantity
+        integral_term[freq_i] = integrated_source
+
+    return _tau, _integral_term
