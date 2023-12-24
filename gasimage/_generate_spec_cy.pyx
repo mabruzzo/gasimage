@@ -588,26 +588,86 @@ def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
         pairs = [('line_uvec', ray_uvec),
                  ('line_start', ray_start),
                  ('grid_left_edge', grid_left_edge),
-                 ('cell_width', cell_width)]
+                 ('cell_width', cell_width),
+                 ('grid_shape', np.array(grid_shape))]
         for name, arr in pairs:
             arr_str = np.array2string(arr, floatmode = 'unique')
             print(f'{name} = {arr_str}')
-        print(f'grid_shape = {np.array2string(np.array(grid_shape))}')
         raise
     return out
 
 
 ####### DOWN HERE WE DEFINE STUFF RELATED TO FULL (NO-SCATTER) RT
 
-"""
+
 def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
-                                     full_ray_start, full_ray_uvec,
-                                     rest_freq, obs_freq,
-                                     doppler_parameter_b = None,
-                                     ndens_HI_n1state_field = ('gas',
-                                                               'H_p0_number_density'),
-                                     out = None):
-"""
+                                    full_ray_start, full_ray_uvec,
+                                    obs_freq, line_props, partition_func,
+                                    particle_mass_g, ndens_field):
+    nrays = full_ray_uvec.shape[0]
+
+    vx_vals = grid['gas', 'velocity_x']
+    vy_vals = grid['gas', 'velocity_y']
+    vz_vals = grid['gas', 'velocity_z']
+
+    out_l = []
+
+    try:
+
+        for i in range(nrays):
+            ray_start = full_ray_start[i,:]
+            ray_uvec = full_ray_uvec[i,:]
+
+            tmp_idx, dz = traverse_grid(
+                line_uvec = ray_uvec,
+                line_start = ray_start,
+                grid_left_edge = spatial_grid_props.left_edge,
+                cell_width = spatial_grid_props.cell_width,
+                grid_shape = spatial_grid_props.grid_shape
+            )
+
+            idx = (tmp_idx[0], tmp_idx[1], tmp_idx[2])
+
+            # convert dz to cm to avoid problems later
+            dz = unyt.unyt_array(dz*spatial_grid_props.cm_per_length_unit,
+                                 'cm')
+
+            # compute the velocity component. We should probably confirm
+            # correctness of the velocity sign
+            vlos = (ray_uvec[0] * vx_vals[idx] +
+                    ray_uvec[1] * vy_vals[idx] +
+                    ray_uvec[2] * vz_vals[idx]).to('cm/s')
+
+            kinetic_T = grid['gas','temperature'].to('K').ndview
+
+            #TODO: use particle_mass_g to compute the doppler parameter
+            cur_doppler_parameter_b = _calc_doppler_parameter_b(
+                grid, idx3Darr=tmp_idx, approach = None,
+            ).to('cm/s')
+
+            ndens = grid[ndens][idx].to('cm**-3')
+            tmp = _generate_noscatter_spectrum_cy(
+                line_props = line_props, obs_freq = obs_freq,
+                vLOS = vlos, ndens = ndens, kinetic_T = kinetic_T,
+                doppler_parameter_b = cur_doppler_parameter_b,
+                dz = dz,
+                level_pops_arg = partition_func
+            )
+            out_l.append({'integrated_source' : tmp[0],
+                          'total_tau' : tmp[1]})
+
+    except:
+        print('There was a problem!')
+        pairs = [('line_uvec', ray_uvec),
+                 ('line_start', ray_start),
+                 ('grid_left_edge', spatial_grid_props.left_edge),
+                 ('cell_width', spatial_grid_props.cell_width),
+                 ('grid_shape', spatial_grid_props.grid_shape)]
+        for name, arr in pairs:
+            arr_str = np.array2string(arr, floatmode = 'unique')
+            print(f'{name} = {arr_str}')
+        raise
+    return out_l
 
 class NdensRatio:
     hi_div_lo: np.ndarray

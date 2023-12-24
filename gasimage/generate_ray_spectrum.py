@@ -275,7 +275,8 @@ def generate_ray_spectrum_legacy(grid, spatial_grid_props,
         pairs = [('line_uvec', ray_uvec),
                  ('line_start', ray_start),
                  ('grid_left_edge', grid_left_edge),
-                 ('cell_width', cell_width)]
+                 ('cell_width', cell_width),
+                 ('grid_shape', spatial_grid_props.grid_shape)]
         for name, arr in pairs:
             arr_str = np.array2string(arr, floatmode = 'unique')
             print(f'{name} = {arr_str}')
