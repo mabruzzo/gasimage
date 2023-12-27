@@ -2,7 +2,7 @@ from functools import partial
 
 import numpy as np
 
-from gasimage.optically_thin_ppv import ray_box_intersections
+from gasimage._ray_intersections_cy import ray_box_intersections
 
 def _test_rb_intersections(line_start, line_uvec, left_edge, right_edge,
                            expected_result, zero_atol = None, rtol = None):

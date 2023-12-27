@@ -1,6 +1,6 @@
 import numpy as np
 
-from gasimage.optically_thin_ppv import traverse_grid
+from gasimage._ray_intersections_cy import traverse_grid
 
 
 # these all need to be replaced with actual tests that check correctness
