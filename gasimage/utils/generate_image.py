@@ -16,6 +16,7 @@ def generate_image_arr(ds_initializer, v_channels, sky_delta_latitude_arr_deg,
                        domain_theta_rad = np.pi/2, domain_phi_rad = 3*np.pi/2,
                        ndens_HI_n1state = ('gas', 'H_p0_number_density'),
                        use_cython_gen_spec = True,
+                       force_general_consolidation = False,
                        rescale_length_factor = None, pool = None):
     """
     Generate a mock ppv image of a simulation using a ray-tracing radiative
@@ -126,6 +127,7 @@ def generate_image_arr(ds_initializer, v_channels, sky_delta_latitude_arr_deg,
         doppler_parameter_b = None,
         use_cython_gen_spec = use_cython_gen_spec,
         rescale_length_factor = rescale_length_factor,
+        force_general_consolidation = force_general_consolidation,
         pool = pool
     )
     return out

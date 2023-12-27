@@ -1,5 +1,39 @@
+"""
+Define Accumulator Strategies
 
-from typing import Any, Dict, Callable, Tuple
+An "Accumulator Strategy" is represpresented by the `AccumStratT` typing-stub
+that we define down below. Essentially, it is a configurable type that
+describes the approach for creating some kind of an "image" of gas.
+
+- At this time, all strategies involve ray-casting. Current implemented types
+perform radiative transfer with different levels of rigor. 
+- Another strategy could hypothetically perform a projection...
+
+The fundamental idea is that an AccumStratT is a configurable type that 
+parameterizes the commands that must be executed. An important note is that an
+AccumStrat should NOT store any of the state of the calculation. All state
+should be stored externally. At the time of writing this, that external state
+is essentially a dictionary of arrays...
+
+Rather than thinking of AccumStratT as an abstract base class, it's more of a
+"protocol". At the time of writing this blurb,
+
+- an AccumStratT instance provides the following attributes (usually defined as
+  class attributes):
+   -> the `name` attribute (a pretty name to identify the AccumStrat - in the
+      future, we may use this in some kind of factory function)
+   -> the `simple_elementwise_sum_consolidate` attrbute (specifies whether we
+      can perform a really simple optimization when consolidating the results
+      from individual ray-subdomain combinations)
+- an AccumStratT must provide the following methods:
+   -> do_work
+   -> get_rslt_props
+   -> validate_intermediate_rslt
+   -> consolidate
+   -> post_process_rslt
+"""
+
+from typing import Any, Callable, Dict, Tuple, TypeVar
 
 import numpy as np
 import unyt
@@ -10,6 +44,11 @@ from ._generate_spec_cy import (
     generate_noscatter_ray_spectrum
 )
 from .rt_config import LineProperties
+
+# define the actual AccumStratT typing stub
+AccumStratT = TypeVar("AccumStratT")
+
+# this is a helper class that is used by multiple accumulator strategies
 
 class SpatialGridProps:
     """
@@ -159,7 +198,17 @@ class OpticallyThinAccumStrat:
         _validate_basic_quan_props(self, rslt)
 
     def consolidate(self, vals):
-        raise RuntimeError("Not necessary")
+        # this is not necessary since self.simple_elementwise_sum_consolidate
+        # is True. We only really implement this for testing purposes
+
+        name, dtype, shape = self.get_rslt_props()[0]
+        out = {name : np.zeros(dtype = dtype, shape = shape)}
+
+        for val in vals:
+            # for vals is just a list of arrays (this is frankly a little odd)
+            out[name][:] += val
+        return out
+        
 
     def post_process_rslt(self, out):
         out['intensity'] = unyt.unyt_array(

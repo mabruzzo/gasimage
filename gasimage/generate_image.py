@@ -1,7 +1,7 @@
 import datetime
 from functools import partial
 import gc
-from typing import Dict, List, Set, Tuple, Any
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import unyt
@@ -18,12 +18,18 @@ except ImportError:
                     callback(result)
                 yield result
 
-from .accumulators import SpatialGridProps, OpticallyThinAccumStrat
+from .accumulators import (
+    AccumStratT,
+    OpticallyThinAccumStrat,
+    SpatialGridProps
+)
 from ._ray_intersections_cy import ray_box_intersections, traverse_grid
 from .ray_collection import ConcreteRayList
 from .utils.misc import _has_consistent_dims
 
-
+def _first_or_default(itr, default=None):
+    # returns the first element of the iterator/iterable or a default value.
+    return next(iter(itr), default)
 
 class Worker:
     """
@@ -223,22 +229,97 @@ class RayGridAssignments:
 
         return out
 
+class CallbackFunctor:
+    """
+    Configurable callback function that is passed the result of each call to
+    `Worker.__call__` (the result is first communicated back to the primary
+    thread and then this is invoked on the primary thread)
 
+    This basically supports 2 modes of operation:
+      1. When `accum_strat.simple_elementwise_sum_consolidate` is True and
+         there is only a single output array, this special mode can be used. In
+         this case, `self.temporary` is unused (it's set to `None`). Instead,
+         the callback will directly update values within
+         `self.single_sum_accum_2Darr`, which is the only array contained by
+         the `out_dict_2D` that is passed to the constructor
+      2. This is the more general mode of operation. In this case, the callback
+         uses `self.temporary` variable to amass (or consolidate) all of the
+         results from every relevant ray-subgrid pair. After the program is
+         done executing `Worker.__call__`, the entries of `self.temporary` are
+         consolidated in a separate step.
 
-def optically_thin_ppv(v_channels, ray_collection, ds,
-                       ndens_HI_n1state = ('gas', 'H_p0_number_density'),
-                       *, doppler_parameter_b = None,
-                       use_cython_gen_spec = True,
-                       rescale_length_factor = None, pool = None):
+    To summarize, the first case makes use of `self.single_sum_accum_2Darr`
+    while `self.temporary` has a value of `None`. The latter case makes use of
+    `self.temporary` and `self.single_sum_accum_2Darr` has a value of `None`
+    """
+    # declare the instance variables:
+    accum_strat: AccumStratT
+    subgrid_ray_map: RayGridAssignments
+    single_sum_accum_2Darr: Optional[np.ndarray]
+    temporary: Optional[List[List[Any]]]
+    
+
+    def __init__(self, accum_strat: AccumStratT,
+                 out_dict_2D: Dict[str, np.ndarray],
+                 subgrid_ray_map: RayGridAssignments,
+                 force_general_mode: bool = False):
+        self.accum_strat, self.subgrid_ray_map = accum_strat, subgrid_ray_map
+        self.single_sum_accum_2Darr, self.temporary = None, None
+
+        if (accum_strat.simple_elementwise_sum_consolidate and
+            not force_general_mode):
+            if len(out_dict_2D) != 1:
+                raise NotImplementedError(
+                    "The implementation needs to be revisited to some degree: "
+                    "an invariant was violated.")
+            self.single_sum_accum_2Darr = _first_or_default(
+                out_dict_2D.values()).view() # we use view for explicitness
+        else:
+            # reserve space in `self.temporary` for each relevant ray-subdomain
+            # pair (that will be returned by the worker)
+            self.temporary = []
+            for pair in enumerate(subgrid_ray_map.num_subgrid_intersections()):
+                ray_id, num_intersections = pair
+                #assert len(self.temporary) == ray_id # sanity check!
+                self.temporary.append([None for i in range(num_intersections)])
+
+    def __call__(self, rslt):
+        grid_index, outputs = rslt
+
+        if self.temporary is None:
+            # - for testing this pipeline with a parallel-pool, it might be
+            #   convenient to add an option to force the contributions to
+            #   be added in a deterministic order
+            # - note: the order should always be deterministic in serial.
+
+            ray_idx = self.subgrid_ray_map.rays_associated_with_subgrid(
+                grid_index, pair_with_seqindx = False)
+            ray_spectra = outputs
+            for i,ray_ind in enumerate(ray_idx):
+                self.single_sum_accum_2Darr[:,ray_ind] += ray_spectra[i,:]
+        else:
+            pairs = self.subgrid_ray_map.rays_associated_with_subgrid(
+                grid_index, pair_with_seqindx = True)
+
+            for i, (ray_ind, seqindx) in enumerate(pairs):
+                # each entry in temporary corresponds to a distinct ray!
+                # -> we are ordering the outputs for each ray so that the
+                #    output for the nearest grid_index comes first (I think
+                #    -- although, it's possible the order is reversed)
+                self.temporary[ray_ind][seqindx] = outputs[i]
+
+def generate_image(accum_strat, ray_collection, ds, *,
+                   force_general_consolidation = False,
+                   rescale_length_factor = None, pool = None):
     """
     Generate a mock ppv image (position-position-velocity image) of a
-    simulation using a ray-tracing radiative transfer algorithm that assumes 
-    that the gas is optically thin.
+    simulation using a ray-casting radiative transfer algorithm.
 
     Parameters
     ----------
-    v_channels: 1D `unyt.unyt_array`
-        A monotonically increasing array of velocity channels.
+    accum_strat: AccumStratT
+        Specifies the details of the imaging. NOTE: we may want not to have the
+        user specify this directly.
     ray_collection:
         A collection of rays. This should be an instance of one of the classes
         defined in this package
@@ -247,25 +328,12 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
         image is constructed. If ds is the dataset, itself, this function
         cannot be parallelized (due to issues with pickling). Currently, the 
         dataset must be unigrid.
-    ndens_HI_n1state: 2-tuple of strings
-        The name of the yt-field holding the number density of H I atoms
-        (neutral Hydrogen) in the electronic ground state (i.e. the electron is
-        in the n=1 orbital). By default, this is the number density of all
-        H I atoms. This approximation is discussed below in the notes.
-    doppler_parameter_b: `unyt.unyt_quantity`, Optional
-        Optional parameter that can be used to specify the Doppler parameter
-        (aka Doppler Broadening parameter) assumed for every cell of the
-        simulation. When not specified, this is computed from the local
-        temperature (and mean-molecular-weight). To avoid any ambiguity, this
-        quantity has units consistent with velocity, this quantity is commonly
-        represented by the variable ``b``, and ``b/sqrt(2)`` specifies the
-        standard deviation of the line-of-sight velocity component. Note that
-        ``b * rest_freq / (unyt.c_cgs * sqrt(2))`` specifies the standard
-        deviation of the line-profile for the transition that occurs at a rest
-        frequency of ``rest_freq``.
-    use_cython_gen_spec: bool, optional
-        Generate the spectrum using the faster cython implementation. Default
-        is True.
+    force_general_consolidation: bool, Optional
+        When `False` (the default), certain accumulation strategies may use
+        a faster approach for consolidation. Note: the order of consolidation
+        may vary based on the value of this parameter (so the exact values of
+        the result may change slightly). This primarily exists for testing
+        purposes.
     rescale_length_factor: float, Optional
         When not `None`, the width of each cell is multiplied by this factor.
         (This effectively holds the position of the simulation's origin fixed
@@ -276,46 +344,34 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
 
     Notes
     -----
-    By default, ``ndens_HI_n1state`` is set to the yt-field specifying the
-    number density of all neutral Hydrogen. When this field is accurate, and
-    the electron-energy level populations are in LTE, this is probably a fairly
-    decent approximation. While it may overestimate the fraction of neutral
-    Hydrogen at n=1 at higher temperatures (above a few times $10^4\, {\rm K}$),
-    most of the hydrogen should be ionized at these temperatures.
-
     We assumed that v<<c. This lets us:
     - neglect the transverse redshift
     - approximate the longitudinal redshift as freq_obs = rest_freq*(1+vel/c)
 
-    TODO: In the future, it would be nice to be able to specify a bulk velocity
-          for the gas.
-    TODO: In the future, we might want to consider adding support for using a 
-          Voigt line profile
-    TODO: Revisit treatment of velocity channels. I think we currently just
-          compute the opacity at the nominal velocity of the channel. In
-          reality, I think velocity channels are probably more like bins
+    Todo
+    ----
+    - In the future, it would be nice to be able to specify a bulk velocity
+      for the gas.
+    - In the future, we might want to consider adding support for using a 
+      Voigt line profile
+    - Revisit treatment of velocity channels. I think we currently just
+      compute the opacity at the nominal velocity of the channel. In reality, I
+      think velocity channels are probably more like bins
+
+    (It may make more sense to decouple these todo notes from this particular
+    function...)
     """
     if rescale_length_factor is not None:
-        assert rescale_length_factor > 0 and np.ndim(rescale_length_factor) == 0
+        if np.all(rescale_length_factor <= 0):
+            raise ValueError("When specified, rescale_length_factor must be a "
+                             "positive value")
+        elif np.ndim(rescale_length_factor) != 0:
+            raise ValueError("When specified, rescale_length_factor must be a "
+                             "scalar value")
+        assert float(rescale_length_factor) == rescale_length_factor
+        rescale_length_factor = float(rescale_length_factor)
     else:
         rescale_length_factor = 1.0
-
-    legacy_accum_strat = True
-
-    # create the accum_strat
-    if legacy_accum_strat:
-        rest_freq = 1.4204058E+09*unyt.Hz,
-        accum_strat = OpticallyThinAccumStrat(
-            obs_freq = (rest_freq*(1+v_channels/unyt.c_cgs)).to('Hz'),
-            use_cython_gen_spec = use_cython_gen_spec,
-            misc_kwargs = {
-                'rest_freq' : rest_freq,
-                'doppler_parameter_b' : doppler_parameter_b,
-                'ndens_HI_n1state_field' : ndens_HI_n1state,
-            }
-        )
-    else:
-        raise NotImplementedError("We haven't gotten here quite yet!")
 
     pool = _DummySerialPool() if pool is None else pool
 
@@ -400,56 +456,14 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
             out_dict_2D[name] = out_dict[name].view()
             out_dict_2D[name].shape = (shape[0], -1)
 
-        # initialize the `temporary` variable
-        if accum_strat.simple_elementwise_sum_consolidate:
-            # this is a special case, where temporary is not really necessary
-            # -> we will just update the output array directly
-            if len(rslt_props) > 1:
-                raise NotImplementedError(
-                    "The implementation needs to be revisited to some degree: "
-                    "an invariant was violated.")
-            single_sum_accum_key = rslt_props[0][0]
-            temporary = None
-        else:
-            # the is the general case: we will use the `temporary` variable to
-            # amass all of the results from every relevant ray-subgrid pair.
-            # Then, once we are done collecting them, we'll use them to compute
-            # the output data
-            single_sum_accum_key = None
-            temporary = []
-            for pair in enumerate(subgrid_ray_map.num_subgrid_intersections()):
-                ray_id, num_intersections = pair
-                assert len(temporary) == (ray_id + 1)
-                temporary.append([None for i in range(num_intersections)])
+        # construct the callback functor that is passed the result of each call
+        # to  `Worker.__call__` (the functor is invoked on the primary thread)
+        callback = CallbackFunctor(
+            accum_strat = accum_strat, out_dict_2D = out_dict_2D,
+            subgrid_ray_map = subgrid_ray_map,
+            force_general_mode = force_general_consolidation)
 
-        # define the callback function -> this is passed the result of each
-        # call to Worker.__call__ (once the result has been communicated back
-        # to the primary thread)
-        def callback(rslt):
-            grid_index, outputs = rslt
-
-            if single_sum_accum_key is not None:
-                # - for testing this pipeline with a parallel-pool, it might be
-                #   convenient to add an option to force the contributions to
-                #   be added in a deterministic order
-                # - note: the order should always be deterministic in serial.
-
-                ray_idx = subgrid_ray_map.rays_associated_with_subgrid(
-                    grid_index, pair_with_seqindx = False)
-                ray_spectra = outputs
-                arr = out_dict_2D[single_sum_accum_key]
-                for i,ray_ind in enumerate(ray_idx):
-                    arr[:,ray_ind] += ray_spectra[i,:]
-            else:
-                pairs = subgrid_ray_map.rays_associated_with_subgrid(
-                    grid_index, pair_with_seqindx = True)
-
-                for i, (ray_ind, seqindx) in enumerate(pairs):
-                    # each entry in temporary corresponds to a distinct ray!
-                    # -> we are ordering the outputs for each ray so that the
-                    #    output for the nearest grid_index comes first (I think
-                    #    -- although, it's possible the order is reversed)
-                    temporary[ray_ind][seqindx] = outputs[i]
+        
     else:
         # this branch is almost never executed. The one exception is when the
         # program is executed using an mpi-pool. In that case all non-root
@@ -475,12 +489,18 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
           f'-> start, end time: {_tstart.time()}, {_tend.time()}\n'
           f'-> elapsed time: {_tend - _tstart}')
 
-    if not accum_strat.simple_elementwise_sum_consolidate:
+    # consolidate the contents of callback.temporary to fill in out_dict_2D
+    if callback.temporary is None:
+        # do nothing -- this is a special case where the callback bypassed
+        # callback.temporary and directly filled out_dict_2D
+        pass
+    else:
         # use the contents of temporary to fill in out_dict_2D
+        temporary = callback.temporary
 
         _tstart_con = datetime.datetime.now()
 
-        print(f'begin consolidation -- start time: {_tstart_consol.time()}')
+        print(f'begin consolidation -- start time: {_tstart_con.time()}')
         for ray_ind, ray_rslts in enumerate(temporary):
             consolidated = accum_strat.consolidate(ray_rslts)
             for name, _, _ in rslt_props:
@@ -499,11 +519,109 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
         for name, _, shape in rslt_props:
             assert out_dict_2D.shape == (shape[0],1)
             out_dict[name] = np.squeeze(out_dict[name])
-
-    if legacy_accum_strat:
-        assert len(rslt_props) == 1 # sanity check!
-        return out_dict[rslt_props[0][0]]
     return out_dict
+
+
+# define the legacy interface for backwards compatability!
+def optically_thin_ppv(v_channels, ray_collection, ds,
+                       ndens_HI_n1state = ('gas', 'H_p0_number_density'),
+                       *, doppler_parameter_b = None,
+                       use_cython_gen_spec = True,
+                       force_general_consolidation = False,
+                       rescale_length_factor = None, pool = None):
+    """
+    Generate a mock ppv image (position-position-velocity image) of a
+    simulation using a ray-tracing radiative transfer algorithm that assumes 
+    that the gas is optically thin.
+
+    Parameters
+    ----------
+    v_channels: 1D `unyt.unyt_array`
+        A monotonically increasing array of velocity channels.
+    ray_collection:
+        A collection of rays. This should be an instance of one of the classes
+        defined in this package
+    ds: `yt.data_objects.static_output.Dataset` or `SnapDatasetInitializer`
+        The dataset or an object that initializes the dataset from which the
+        image is constructed. If ds is the dataset, itself, this function
+        cannot be parallelized (due to issues with pickling). Currently, the 
+        dataset must be unigrid.
+    ndens_HI_n1state: 2-tuple of strings
+        The name of the yt-field holding the number density of H I atoms
+        (neutral Hydrogen) in the electronic ground state (i.e. the electron is
+        in the n=1 orbital). By default, this is the number density of all
+        H I atoms. This approximation is discussed below in the notes.
+    doppler_parameter_b: `unyt.unyt_quantity`, Optional
+        Optional parameter that can be used to specify the Doppler parameter
+        (aka Doppler Broadening parameter) assumed for every cell of the
+        simulation. When not specified, this is computed from the local
+        temperature (and mean-molecular-weight). To avoid any ambiguity, this
+        quantity has units consistent with velocity, this quantity is commonly
+        represented by the variable ``b``, and ``b/sqrt(2)`` specifies the
+        standard deviation of the line-of-sight velocity component. Note that
+        ``b * rest_freq / (unyt.c_cgs * sqrt(2))`` specifies the standard
+        deviation of the line-profile for the transition that occurs at a rest
+        frequency of ``rest_freq``.
+    use_cython_gen_spec: bool, optional
+        Generate the spectrum using the faster cython implementation. Default
+        is True.
+    force_general_consolidation: bool, Optional
+        When `False` (the default), a faster consolidation strategy will be
+        used. When `True`, a slower, but more general purpose strategy will be
+        used. The order of consolidation may vary based on the value of this
+        parameter (so the exact values of the result may change slightly)
+    rescale_length_factor: float, Optional
+        When not `None`, the width of each cell is multiplied by this factor.
+        (This effectively holds the position of the simulation's origin fixed
+        in place).
+    pool: Optional
+        A taskpool from the schwimmbad package can be specified for this
+        argument to facillitate parallelization.
+
+    Notes
+    -----
+    By default, ``ndens_HI_n1state`` is set to the yt-field specifying the
+    number density of all neutral Hydrogen. When this field is accurate, and
+    the electron-energy level populations are in LTE, this is probably a fairly
+    decent approximation. While it may overestimate the fraction of neutral
+    Hydrogen at n=1 at higher temperatures (above a few times $10^4\, {\rm K}$),
+    most of the hydrogen should be ionized at these temperatures.
+
+    We assumed that v<<c. This lets us:
+    - neglect the transverse redshift
+    - approximate the longitudinal redshift as freq_obs = rest_freq*(1+vel/c)
+
+    See Also
+    --------
+    generate_image: the underlying function that does most of the heavy lifting
+    """
+
+    # create the accum_strat
+    rest_freq = 1.4204058E+09*unyt.Hz,
+    accum_strat = OpticallyThinAccumStrat(
+        obs_freq = (rest_freq*(1+v_channels/unyt.c_cgs)).to('Hz'),
+        use_cython_gen_spec = use_cython_gen_spec,
+        misc_kwargs = {
+            'rest_freq' : rest_freq,
+            'doppler_parameter_b' : doppler_parameter_b,
+            'ndens_HI_n1state_field' : ndens_HI_n1state,
+        }
+    )
+
+    out_dict = generate_image(
+        accum_strat = accum_strat, ray_collection = ray_collection, ds = ds,
+        force_general_consolidation = force_general_consolidation,
+        rescale_length_factor = rescale_length_factor, pool = pool
+    )
+
+    # pull the array out of the dictionary for backwards compatability
+    if len(out_dict) != 1:
+        raise RuntimeError("Sanity-check failed! generate_image is expected "
+                           "to produce a dict with just one key-value pair "
+                           f"when passed a {accum_strat.name} accum strategy")
+    else:
+        return _first_or_default(out_dict.values())
+    
 
 _intensity_dim = (
     unyt.dimensions.energy /

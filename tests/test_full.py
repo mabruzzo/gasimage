@@ -45,7 +45,8 @@ def _create_raw_ppv(enzoe_sim_path,
                     sky_latitude_ref_deg = 0.0,
                     domain_theta_rad = np.pi/2,
                     domain_phi_rad = 3*np.pi/2,
-                    use_cython_gen_spec = True, nproc = 1):
+                    use_cython_gen_spec = True,
+                    force_general_consolidation = False, nproc = 1):
     # before use_cython_gen_spec existed, it was effectively False
     ds_loader = SnapDatasetInitializer(
         enzoe_sim_path, setup_func = _dummy_create_field_callback)
@@ -68,6 +69,7 @@ def _create_raw_ppv(enzoe_sim_path,
             ndens_HI_n1state = ('gas', 'H_p0_number_density'),
             rescale_length_factor = 1,
             use_cython_gen_spec = use_cython_gen_spec,
+            force_general_consolidation = force_general_consolidation,
             pool = pool
         )
 
@@ -232,8 +234,8 @@ def test_full_raytrace_perspective_alt(answer_test_config, indata_dir):
         )
     )
 
-
-def test_compare_cython_legacy_gen_spec(indata_dir):
+def _test_compare_gen_spec(indata_dir, cython_legacy_comparison,
+                           rtol, atol):
     enzoe_sim_path = os.path.join(
         indata_dir, ('X100_M1.5_HD_CDdftCstr_R56.38_logP3_Res8/cloud_07.5000/'
                      'cloud_07.5000.block_list')
@@ -241,8 +243,23 @@ def test_compare_cython_legacy_gen_spec(indata_dir):
 
     ppv_arrs = []
 
-    for use_cython_gen_spec in [True, False]:
-        print(f'\nstart run with use_cython_gen_spec = {use_cython_gen_spec}')
+    if cython_legacy_comparison:
+        kwargs_pair = [
+            {'use_cython_gen_spec' : True},
+            {'use_cython_gen_spec' : False},
+        ]
+        err_msg = ("failure in comparison of ppvs built with cython-based "
+                   "spectrum builder and the legacy spectrum builder")
+    else:
+        kwargs_pair = [
+            {'force_general_consolidation' : True},
+            {'force_general_consolidation' : False},
+        ]
+        err_msg = ("failure in comparison of ppvs built with the generic "
+                   "consolidation strategy and faster legacy strategy")
+
+    for kwargs in kwargs_pair:
+        print(f'\nstart run with {kwargs}')
         ppv, _ = _create_raw_ppv(
             enzoe_sim_path = enzoe_sim_path,
             sky_delta_latitude_arr_deg = np.arange(0.0, 0.25, 0.0333333),
@@ -251,18 +268,28 @@ def test_compare_cython_legacy_gen_spec(indata_dir):
             obs_distance = unyt.unyt_quantity(12.4, 'kpc'),
             sky_latitude_ref_deg = 0.0,
             domain_theta_rad = np.pi/2, domain_phi_rad = 3*np.pi/2,
-            use_cython_gen_spec = use_cython_gen_spec,
-            nproc = 1
+            nproc = 1, **kwargs
         )
         ppv_arrs.append(ppv)
 
-    ppv_cython, ppv_legacy = ppv_arrs
+    ppv_newer, ppv_older_approach = ppv_arrs
 
     assert_allclose_units(
-        actual = ppv_cython, desired = ppv_legacy,
+        actual = ppv_newer, desired = ppv_older_approach,
         err_msg = ("failure in comparison of ppvs built with cython-based "
                    "spectrum builder and the legacy spectrum builder"),
-        rtol = 4.e-12, atol = 0.0)
+        rtol = rtol, atol = atol)
+
+def test_compare_cython_legacy_gen_spec(indata_dir):
+    _test_compare_gen_spec(indata_dir, cython_legacy_comparison = True,
+                           rtol = 4.e-12, atol = 0.0)
+
+# here we compare the traditional consolidation strategy (we directly
+# consolidate in the output array) vs the more general-purpose approach
+def test_compare_consolidation_strat(indata_dir):
+    _test_compare_gen_spec(indata_dir, cython_legacy_comparison = False,
+                           rtol = 0.0, atol = 0.0)
+
 
 # other useful tests for the future:
 # - rays outside of the domain
