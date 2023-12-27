@@ -1,4 +1,6 @@
 import datetime
+from functools import partial
+import gc
 from typing import Dict, List, Set, Tuple, Any
 
 import numpy as np
@@ -15,8 +17,6 @@ except ImportError:
                 if callback is not None:
                     callback(result)
                 yield result
-
-import gc
 
 from .accumulators import SpatialGridProps, OpticallyThinAccumStrat
 from ._ray_intersections_cy import ray_box_intersections, traverse_grid
@@ -142,6 +142,12 @@ class RayGridAssignments:
     # this set lists all subgrid ids that are associated with one or more rays
     _subgrids_with_rays: Set[int]
 
+    # this associates the number of intersected grids with a ray-id
+    # -> note this may not need to be an attribute
+    # -> we could potentially make a factory method that returns both this list
+    #    and RayGridAssignments together
+    _num_intersected_subgrids: List[int]
+
     def __init__(self, ds, ray_list, units,
                  rescale_length_factor = 1.0):
         subgrid_array = _top_level_grid_indices(ds)
@@ -159,9 +165,12 @@ class RayGridAssignments:
 
         self._subgrids_with_rays = set()
 
+        length = len(ray_list)
+        self._num_intersected_subgrids = [0 for i in range(length)]
+
         ray_uvec_l = ray_list.get_ray_uvec()
 
-        for i in range(len(ray_list)):
+        for i in range(length):
             ray_start = ray_list.ray_start_codeLen[i,:]
             ray_uvec = ray_uvec_l[i,:]
 
@@ -177,24 +186,41 @@ class RayGridAssignments:
                                   grid_shape = subgrid_array_shape)
             subgrid_sequence = tuple(subgrid_array[idx[0],idx[1],idx[2]])
 
+            # record that the current ray is associated with subgrid_sequence
+
             self._subgrids_with_rays.update(subgrid_sequence)
 
             if subgrid_sequence in self._sequence_table:
                 self._sequence_table[subgrid_sequence].append(i)
             else:
                 self._sequence_table[subgrid_sequence] = [i]
-        
-    def rays_associated_with_subgrid(self, subgrid_id):
+
+            # record the number of intersected subgrids
+            self._num_intersected_subgrids[i] = len(subgrid_sequence)
+
+    def num_subgrid_intersections(self):
+        return self._num_intersected_subgrids
+
+    def rays_associated_with_subgrid(self, subgrid_id,
+                                     pair_with_seqindx = False):
         """
         Returns the indicies of rays that are associated with the given
         subgrid_id
         """
-        out = []
         if subgrid_id not in self._subgrids_with_rays:
-            return out
-        for subgrid_sequence, ray_ids in self._sequence_table.items():
-            if subgrid_id in subgrid_sequence:
-                out = out + ray_ids
+            return []
+        out = []
+        if pair_with_seqindx:
+            for subgrid_sequence, ray_ids in self._sequence_table.items():
+                if subgrid_id not in subgrid_sequence:
+                    continue
+                seqpos = subgrid_sequence.index(subgrid_id)
+                out = out + [(ray_id, seqpos) for ray_id in ray_ids]
+        else:
+            for subgrid_sequence, ray_ids in self._sequence_table.items():
+                if subgrid_id in subgrid_sequence:
+                    out = out + ray_ids
+
         return out
 
 
@@ -274,17 +300,22 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
     else:
         rescale_length_factor = 1.0
 
+    legacy_accum_strat = True
+
     # create the accum_strat
-    rest_freq = 1.4204058E+09*unyt.Hz,
-    accum_strat = OpticallyThinAccumStrat(
-        obs_freq = (rest_freq*(1+v_channels/unyt.c_cgs)).to('Hz'),
-        use_cython_gen_spec = use_cython_gen_spec,
-        misc_kwargs = {
-            'rest_freq' : rest_freq,
-            'doppler_parameter_b' : doppler_parameter_b,
-            'ndens_HI_n1state_field' : ndens_HI_n1state,
-        }
-    )
+    if legacy_accum_strat:
+        rest_freq = 1.4204058E+09*unyt.Hz,
+        accum_strat = OpticallyThinAccumStrat(
+            obs_freq = (rest_freq*(1+v_channels/unyt.c_cgs)).to('Hz'),
+            use_cython_gen_spec = use_cython_gen_spec,
+            misc_kwargs = {
+                'rest_freq' : rest_freq,
+                'doppler_parameter_b' : doppler_parameter_b,
+                'ndens_HI_n1state_field' : ndens_HI_n1state,
+            }
+        )
+    else:
+        raise NotImplementedError("We haven't gotten here quite yet!")
 
     pool = _DummySerialPool() if pool is None else pool
 
@@ -350,26 +381,75 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
                         rescale_length_factor = rescale_length_factor,
                         accum_strat = accum_strat)
 
-        # create the output array and callback function
-        out_shape = (v_channels.size,) + ray_collection.shape
-        out = np.zeros(shape = out_shape)
+        # create the output!
+        rslt_props = accum_strat.get_rslt_props()
+        
+        out_dict = {}
+        out_dict_2D = {} # this holds views of the entries in out_dict that
+                         # have been flattened down to 2D
+        for name, dtype, shape in rslt_props:
+            assert isinstance(shape, tuple) and len(shape) == 1 # sanity check
+            out_shape = shape + ray_collection.shape
+            if accum_strat.simple_elementwise_sum_consolidate:
+                out_dict[name] = np.zeros(shape = out_shape, dtype = dtype)
+            else:
+                fill_value = np.nan if dtype == np.float64 else 0
+                out_dict[name] = np.full(shape = out_shape, dtype = dtype,
+                                         fill_value = fill_value)
 
-        # flatten the out array down to 2-dimensions:
-        out_2D = out.view()
-        out_2D.shape = (v_channels.size, -1)
+            out_dict_2D[name] = out_dict[name].view()
+            out_dict_2D[name].shape = (shape[0], -1)
 
+        # initialize the `temporary` variable
+        if accum_strat.simple_elementwise_sum_consolidate:
+            # this is a special case, where temporary is not really necessary
+            # -> we will just update the output array directly
+            if len(rslt_props) > 1:
+                raise NotImplementedError(
+                    "The implementation needs to be revisited to some degree: "
+                    "an invariant was violated.")
+            single_sum_accum_key = rslt_props[0][0]
+            temporary = None
+        else:
+            # the is the general case: we will use the `temporary` variable to
+            # amass all of the results from every relevant ray-subgrid pair.
+            # Then, once we are done collecting them, we'll use them to compute
+            # the output data
+            single_sum_accum_key = None
+            temporary = []
+            for pair in enumerate(subgrid_ray_map.num_subgrid_intersections()):
+                ray_id, num_intersections = pair
+                assert len(temporary) == (ray_id + 1)
+                temporary.append([None for i in range(num_intersections)])
+
+        # define the callback function -> this is passed the result of each
+        # call to Worker.__call__ (once the result has been communicated back
+        # to the primary thread)
         def callback(rslt):
-            # this callback function actually takes the result of each call to
-            # Worker.__call__ (once they have been communicated back to the
-            # primary thread) and consolidates them in the output array.
-            # - for testing this pipeline with a parallel-pool, it might be
-            #   convenient to add an option to force the contributions to be
-            #   added in a deterministic order
-            # - note: the order should always be deterministic in serial.
-            grid_index, ray_spectra = rslt
-            ray_idx = subgrid_ray_map.rays_associated_with_subgrid(grid_index)
-            for i,ray_ind in enumerate(ray_idx):
-                out_2D[:,ray_ind] += ray_spectra[i,:]
+            grid_index, outputs = rslt
+
+            if single_sum_accum_key is not None:
+                # - for testing this pipeline with a parallel-pool, it might be
+                #   convenient to add an option to force the contributions to
+                #   be added in a deterministic order
+                # - note: the order should always be deterministic in serial.
+
+                ray_idx = subgrid_ray_map.rays_associated_with_subgrid(
+                    grid_index, pair_with_seqindx = False)
+                ray_spectra = outputs
+                arr = out_dict_2D[single_sum_accum_key]
+                for i,ray_ind in enumerate(ray_idx):
+                    arr[:,ray_ind] += ray_spectra[i,:]
+            else:
+                pairs = subgrid_ray_map.rays_associated_with_subgrid(
+                    grid_index, pair_with_seqindx = True)
+
+                for i, (ray_ind, seqindx) in enumerate(pairs):
+                    # each entry in temporary corresponds to a distinct ray!
+                    # -> we are ordering the outputs for each ray so that the
+                    #    output for the nearest grid_index comes first (I think
+                    #    -- although, it's possible the order is reversed)
+                    temporary[ray_ind][seqindx] = outputs[i]
     else:
         # this branch is almost never executed. The one exception is when the
         # program is executed using an mpi-pool. In that case all non-root
@@ -395,13 +475,35 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
           f'-> start, end time: {_tstart.time()}, {_tend.time()}\n'
           f'-> elapsed time: {_tend - _tstart}')
 
-    # attach units and massage the output shape
-    out_units = 'erg/(cm**2 * Hz * s * steradian)'
+    if not accum_strat.simple_elementwise_sum_consolidate:
+        # use the contents of temporary to fill in out_dict_2D
+
+        _tstart_con = datetime.datetime.now()
+
+        print(f'begin consolidation -- start time: {_tstart_consol.time()}')
+        for ray_ind, ray_rslts in enumerate(temporary):
+            consolidated = accum_strat.consolidate(ray_rslts)
+            for name, _, _ in rslt_props:
+                out_dict_2D[name][...,ray_ind] = consolidated[name]
+
+        _tend_con = datetime.datetime.now()
+        print('finished consolidation\n'
+              f'-> start, end time: {_tstart_con.time()}, {_tend_con.time()}\n'
+              f'-> elapsed time: {_tend_con - _tstart_con}')
+
+    # do any post-processing (this is where units will be attached)
+    accum_strat.post_process_rslt(out_dict)
+
+    # massage the output shape
     if len(ray_collection.shape) == 1:
-        assert out_2D.shape == (v_channels.size, 1)
-        return unyt.unyt_array(out_2D[:,0], out_units)
-    else:
-        return unyt.unyt_array(out, out_units)
+        for name, _, shape in rslt_props:
+            assert out_dict_2D.shape == (shape[0],1)
+            out_dict[name] = np.squeeze(out_dict[name])
+
+    if legacy_accum_strat:
+        assert len(rslt_props) == 1 # sanity check!
+        return out_dict[rslt_props[0][0]]
+    return out_dict
 
 _intensity_dim = (
     unyt.dimensions.energy /
