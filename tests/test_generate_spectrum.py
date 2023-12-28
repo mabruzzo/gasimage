@@ -333,7 +333,6 @@ def _test_cmp_generate_ray_spectrum(nfreq = 401, ngas = 100,
                           ngas = ngas, zero_vlos = zero_vlos, seed = seed,
                           nominal_dz = nominal_dz, n_freq_stddev = 4)
 
-
     kwargs = dict(
         line_props = line_props,
         obs_freq = data["obs_freq"], vLOS = data['vlos'].to('cm/s'),
@@ -343,13 +342,22 @@ def _test_cmp_generate_ray_spectrum(nfreq = 401, ngas = 100,
         level_pops_arg = partition_func,
     )
 
+    def _customize_kwargs(fn, kwargs):
+        if fn == _generate_noscatter_spectrum_cy:
+            out = kwargs.copy()
+            out['kinetic_T'] = kwargs['kinetic_T'].to('K').ndview
+            out['dz'] = kwargs['dz'].to('cm').ndview
+            out['ndens'] = kwargs['ndens'].to('cm**-3').ndview
+            return out
+        return kwargs
+
     integrated_source_l = []
     tau_l = []
 
     for fn, fn_name in fn_name_pairs:
-        
+        cur_kwargs = _customize_kwargs(fn, kwargs)
         t1 = datetime.datetime.now()
-        integrated_source, tau_tot = fn( **kwargs)
+        integrated_source, tau_tot = fn( **cur_kwargs)
         t2 = datetime.datetime.now()
         if isinstance(integrated_source, unyt.unyt_array):
             integrated_source = integrated_source.v

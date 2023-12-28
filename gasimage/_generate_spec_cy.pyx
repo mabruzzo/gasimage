@@ -303,49 +303,52 @@ cdef class ScalarDopplerParameter:
                                            #       than is required
             out[i] = self.doppler_parameter_b_cm_per_s
 
-#cdef class DopplerParameterFromSpecificEint:
-#    cdef double[:,:,::1] specific_eint_arr
-#    cdef double factor # includes terms to convert to cm/s
-#
-#    def __init__(self, grid):
-#        eint_vals = grid['enzoe','internal_energy']
-#
-#        if not _has_consistent_dims(eint_vals, unyt.dimensions.velocity**2):
-#            raise RuntimeError(f"('enzoe','internal_energy')'s units are wrong")
-#
-#        # doppler b parameter is: b = sqrt( 2 * kboltz * T / (mu * mH))
-#        # note that   eint = p / ((gamma - 1) * rho)
-#        #             eint * (gamma - 1) = p / rho
-#        #                                = kboltz * T / (mu * mH)
-#        #             b = sqrt(2 * eint * (gamma - 1))
-#        #             b = sqrt(2 * (gamma - 1)) * sqrt(eint)
-#
-#        factor = np.sqrt(2 * (grid.ds.gamma - 1))
-#        # include conversion factor to cm/s
-#        factor *= np.sqrt(eint_vals.uq).to('cm/s').v
-#
-#        self.specific_eint_arr = eint_vals.ndview
-#        self.factor = factor
-#
-#        raise RuntimeError("NOTE FULLY TESTED YET")
-#
-#    cdef get_vals_cm_per_s(self, long[:,:] idx3Darr,
-#                           double [::1] out):
-#        cdef Py_ssize_t i
-#        cdef long i0, i1, i2
-#        for i in range(idx3Darr.shape[1]): # note: out is allowed to be longer
-#                                           #       than is required
-#            i0 = idx3Darr[0,i]
-#            i1 = idx3Darr[1,i]
-#            i2 = idx3Darr[2,i]
-#            out[i] = self.factor * sqrt_f64(self.specific_eint_arr[i0,i1,i2])
-
 # = yt.units.mh_cgs
 DEF _MH_CGS = 1.6737352238051868e-24
 # = yt.units.kboltz_cgs
 DEF _KBOLTZ_CGS = 1.3806488e-16
 
+# not used quite yet
+cdef class DopplerParameterFromTemperature:
+    cdef double[:,:,::1] temperature_arr
+    cdef double inv_particle_mass_cgs
+    cdef double internal_to_Kelvin_factor
+
+    def __init__(self, grid, particle_mass_in_grams):
+        T_field = ('gas','temperature')
+        mmw_field = ('gas','mean_molecular_weight')
+        T_vals = grid[T_field]
+
+        # previously, a bug in the units caused a really hard to debug error
+        # (when running the program in parallel). So now we manually check!
+        if not _has_consistent_dims(T_vals, unyt.dimensions.temperature):
+            raise RuntimeError(f"{T_field!r}'s units are wrong")
+
+        self.temperature_arr = T_vals.ndview # strip units
+        self.inv_particle_mass_cgs = 1.0 / particle_mass_in_grams
+
+        self.internal_to_Kelvin_factor = float(T_vals.uq.to('K').v)
+
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
+    cdef get_vals_cm_per_s(self, long[:,:] idx3Darr,
+                           double [::1] out):
+        cdef Py_ssize_t i
+        cdef long i0, i1, i2
+        for i in range(idx3Darr.shape[1]): # note: out is allowed to be longer
+                                           #       than is required
+            i0 = idx3Darr[0,i]
+            i1 = idx3Darr[1,i]
+            i2 = idx3Darr[2,i]
+
+            out[i] = sqrt_f64(2.0 * _KBOLTZ_CGS *
+                              self.internal_to_Kelvin_factor *
+                              self.temperature_arr[i0,i1,i2] *
+                              self.inv_particle_mass_cgs)
+
+
 cdef class DopplerParameterFromTemperatureMMW:
+    # this was the original approach! it's wrong should just use particle mass
     cdef double[:,:,::1] temperature_arr
     cdef double[:,:,::1] mmw_arr
     cdef double internal_to_Kelvin_factor
@@ -643,9 +646,9 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
 
             idx = (tmp_idx[0], tmp_idx[1], tmp_idx[2])
 
-            # convert dz to cm to avoid problems later
-            dz = unyt.unyt_array(dz*spatial_grid_props.cm_per_length_unit,
-                                 'cm')
+            # convert dz to cm to avoid problems later (but DON'T convert
+            # it into a unyt_array)
+            dz = dz * spatial_grid_props.cm_per_length_unit
 
             # compute the velocity component. We should probably confirm
             # correctness of the velocity sign
@@ -660,10 +663,10 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
                 grid, idx3Darr=tmp_idx, approach = None,
             ).to('cm/s')
 
-            ndens = grid[ndens_field][idx].to('cm**-3')
+            ndens = grid[ndens_field][idx].to('cm**-3').ndview
             tmp = _generate_noscatter_spectrum_cy(
                 line_props = line_props, obs_freq = obs_freq,
-                vLOS = vlos, ndens = ndens, kinetic_T_Kelvin = kinetic_T,
+                vLOS = vlos, ndens = ndens, kinetic_T = kinetic_T,
                 doppler_parameter_b = cur_doppler_parameter_b,
                 dz = dz,
                 level_pops_arg = partition_func
@@ -688,7 +691,7 @@ class NdensRatio:
     hi_div_lo: np.ndarray
 
 def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
-                                    kinetic_T_Kelvin, doppler_parameter_b, dz,
+                                    kinetic_T, doppler_parameter_b, dz,
                                     level_pops_arg):
     """
     Compute the specific intensity (aka monochromatic intensity) and optical
@@ -713,10 +716,10 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
         An array of frequencies to perform rt at.
     vLOS : unyt.unyt_array, shape(ngas,)
         Velocities of the gas in cells along the ray (in cm/s).
-    ndens : unyt.unyt_array, shape(ngas,)
+    ndens : np.ndarray, shape(ngas,)
         The number density in cells along the ray (in cm**-3). The exact
         meaning of this argument depends on ``level_pops_arg``.
-    kinetic_T_Kelvin : np.ndarray, shape(ngas,)
+    kinetic_T : np.ndarray, shape(ngas,)
         Specifies the kinetic temperatures along the ray (in units of Kelvin)
     doppler_parameter_b : unyt.unyt_array, shape(ngas,)
         The Doppler parameter (aka Doppler broadening parameter) of the gas in
@@ -727,7 +730,7 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
         Rybicki and Lightman call the "Doppler width". This alternative
         quantity is a factor of ``sqrt(2)`` larger than the standard deviation
         of the frequency profile.
-    dz : unyt.unyt_array, shape(ngas,)
+    dz : np.ndarray, shape(ngas,)
         The distance travelled by the ray through each cell (in cm).
     level_pops_arg : NdensRatio or callable
         If this is an instance of NdensRatio, it specifies the ratio of number
@@ -754,7 +757,7 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
         ``bkg_intensity*np.exp(-tau[:, -1]) + integrated_source``.
     """
 
-    ndens = ndens.to('cm**-3').ndview
+    ndens = ndens
 
     rest_freq_Hz = line_props.freq_Hz
 
@@ -775,12 +778,12 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
         ndens_ion_species = ndens
         partition_func = level_pops_arg
         # thermodynamic beta
-        beta_cgs = 1.0 / (kinetic_T_Kelvin * _KBOLTZ_CGS)
+        beta_cgs = 1.0 / (kinetic_T * _KBOLTZ_CGS)
 
         # in this case, treat ndens as number density of particles described by
         # partition function
         ndens_1 = (ndens_ion_species * g_1 * np.exp(-energy_1_erg * beta_cgs)
-                   / partition_func(kinetic_T_Kelvin))
+                   / partition_func(kinetic_T))
 
         # n1/n2 = (g1/g2) * exp(restframe_energy_photon_cgs * beta_cgs)
         # n2/n1 = (g2/g1) * exp(-restframe_energy_photon_cgs * beta_cgs)
@@ -844,7 +847,7 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
     tau, integrated_source = solve_noscatter_rt(
         source_function = source_func_cgs,
         absorption_coef = alpha_nu_cgs,
-        dz = dz.to('cm').ndview
+        dz = dz
     )
 
     return integrated_source, tau[:,-1]
