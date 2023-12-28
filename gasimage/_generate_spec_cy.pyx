@@ -8,6 +8,22 @@ from libc.math cimport exp as exp_f64
 from libc.math cimport sqrt as sqrt_f64
 from libc.stdlib cimport malloc, free
 
+# TODO: use the following instead of DEF
+#cdef extern from *:
+#    """
+#    #define INV_SQRT_PI 0.5641895835477563
+#    #define QUARTER_DIV_PI 0.07957747154594767
+#    // define some Macros equal to some yt-constants
+#    // yt.units.c_cgs =
+#    #define C_CGS 29979245800.0
+#    // yt.units.h_cgs =
+#    #define H_CGS 6.62606957e-27
+#    """
+#    double INV_SQRT_PI_
+#    double QUARTER_DIV_PI
+#    double C_CGS
+#    double H_CGS
+
 DEF _INV_SQRT_PI = 0.5641895835477563
 DEF _QUARTER_DIV_PI = 0.07957747154594767
 
@@ -599,7 +615,6 @@ def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
 
 ####### DOWN HERE WE DEFINE STUFF RELATED TO FULL (NO-SCATTER) RT
 
-
 def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
                                     full_ray_start, full_ray_uvec,
                                     obs_freq, line_props, partition_func,
@@ -638,17 +653,17 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
                     ray_uvec[1] * vy_vals[idx] +
                     ray_uvec[2] * vz_vals[idx]).to('cm/s')
 
-            kinetic_T = grid['gas','temperature'].to('K').ndview
+            kinetic_T = grid['gas','temperature'][idx].to('K').ndview
 
             #TODO: use particle_mass_g to compute the doppler parameter
             cur_doppler_parameter_b = _calc_doppler_parameter_b(
                 grid, idx3Darr=tmp_idx, approach = None,
             ).to('cm/s')
 
-            ndens = grid[ndens][idx].to('cm**-3')
+            ndens = grid[ndens_field][idx].to('cm**-3')
             tmp = _generate_noscatter_spectrum_cy(
                 line_props = line_props, obs_freq = obs_freq,
-                vLOS = vlos, ndens = ndens, kinetic_T = kinetic_T,
+                vLOS = vlos, ndens = ndens, kinetic_T_Kelvin = kinetic_T,
                 doppler_parameter_b = cur_doppler_parameter_b,
                 dz = dz,
                 level_pops_arg = partition_func
@@ -673,7 +688,7 @@ class NdensRatio:
     hi_div_lo: np.ndarray
 
 def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
-                                    kinetic_T, doppler_parameter_b, dz,
+                                    kinetic_T_Kelvin, doppler_parameter_b, dz,
                                     level_pops_arg):
     """
     Compute the specific intensity (aka monochromatic intensity) and optical
@@ -701,8 +716,8 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
     ndens : unyt.unyt_array, shape(ngas,)
         The number density in cells along the ray (in cm**-3). The exact
         meaning of this argument depends on ``level_pops_arg``.
-    kinetic_T : unyt.unyt_array, shape(ngas,)
-        Specifies the kinetic temperatures along the ray
+    kinetic_T_Kelvin : np.ndarray, shape(ngas,)
+        Specifies the kinetic temperatures along the ray (in units of Kelvin)
     doppler_parameter_b : unyt.unyt_array, shape(ngas,)
         The Doppler parameter (aka Doppler broadening parameter) of the gas in
         cells along the ray, often abbreviated with the variable ``b``. This
@@ -740,7 +755,6 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
     """
 
     ndens = ndens.to('cm**-3').ndview
-    kinetic_T = kinetic_T.to('K').ndview
 
     rest_freq_Hz = line_props.freq_Hz
 
@@ -761,12 +775,12 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
         ndens_ion_species = ndens
         partition_func = level_pops_arg
         # thermodynamic beta
-        beta_cgs = 1.0 / (kinetic_T * _KBOLTZ_CGS)
+        beta_cgs = 1.0 / (kinetic_T_Kelvin * _KBOLTZ_CGS)
 
         # in this case, treat ndens as number density of particles described by
         # partition function
         ndens_1 = (ndens_ion_species * g_1 * np.exp(-energy_1_erg * beta_cgs)
-                   / partition_func(kinetic_T))
+                   / partition_func(kinetic_T_Kelvin))
 
         # n1/n2 = (g1/g2) * exp(restframe_energy_photon_cgs * beta_cgs)
         # n2/n1 = (g2/g1) * exp(-restframe_energy_photon_cgs * beta_cgs)

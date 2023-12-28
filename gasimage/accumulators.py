@@ -313,7 +313,7 @@ class NoScatterRTAccumStrat:
         _validate_basic_quan_props(self, rslt)
 
     def consolidate(self, rslt_iter):
-       consolidate_noscatter_rtchunks(chunk_itr)
+       return consolidate_noscatter_rtchunks(rslt_iter)
 
     def post_process_rslt(self, out):
         out['integrated_source'] = unyt.unyt_array(

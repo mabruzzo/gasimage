@@ -130,7 +130,7 @@ def air_to_vacuum(air_wavelength):
 
     return n * air_wavelength
 
-def default_halpha_props():
+def builtin_halpha_props():
 
     # This information comes from NIST. They provide a couple line transitions.
     # We picked the transition consistent with what Wikipedia cites (other

@@ -284,13 +284,6 @@ def generate_ray_spectrum_legacy(grid, spatial_grid_props,
         raise
     return out
 
-
-# ==========================================================================
-# the following function was written at one point when I really dug into the
-# details of radiative transfer. It is not tested and probably has bugs. It
-# would also take some work to parallelize...
-# ==========================================================================
-
 def blackbody_intensity_cgs(freq_Hz, thermodynamic_beta_cgs):
     h_cgs = unyt.h_cgs.v
     c_cgs = unyt.c_cgs.v

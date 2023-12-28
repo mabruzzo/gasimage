@@ -116,7 +116,7 @@ class ConcreteRayList:
 
     @property
     def shape(self):
-        return (len(self.shape),)
+        return (len(self),)
 
     def get_ray_uvec(self):
         return _convert_vec_l_to_uvec_l(self._ray_vec)

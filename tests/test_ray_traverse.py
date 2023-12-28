@@ -1,6 +1,9 @@
 import numpy as np
+import yt
 
 from gasimage._ray_intersections_cy import traverse_grid
+
+from test_compare import ray_values_startend
 
 
 # these all need to be replaced with actual tests that check correctness
@@ -31,8 +34,8 @@ def test_traverse_grid():
                                grid_shape = (120,20,20))
     print(idx)
     print(dists)
-    
-    
+
+
 def test_traverse_grid2():
     # This file contains inputs that previously caused problems
     if False:
@@ -108,6 +111,98 @@ def test_traverse_grid_small_truncation_probs():
     )
     assert (expected_idx == idx).all()
 
+#------------------------------------------------------------------------
+# define some tests where we compare against results found with yt.YTRay
+# -> in these tests, we currently need to specify the ray by providing its
+#    start and end points
+#------------------------------------------------------------------------
+
+def traverse_grid_startend(start_end_pairs, grid_left_edge,
+                           cell_width, grid_shape):
+
+    out_pairs = []
+
+    for start, end in start_end_pairs:
+        line_start = np.array(start)
+        line_vec = (np.array(end) - np.array(start))
+        assert (line_vec != 0).any()
+        line_uvec = line_vec / np.linalg.norm(line_vec)
+    
+        idx, dists = traverse_grid(
+            line_uvec = line_uvec, 
+            line_start = line_start,
+            grid_left_edge = grid_left_edge,
+            cell_width = cell_width,
+            grid_shape = grid_shape)
+
+        out_pairs.append((idx,dists))
+    return out_pairs
+
+
+def traverse_grid_startend_comparison(start_end_pairs, grid_left_edge,
+                                      cell_width, grid_shape):
+    data = {'Density' : np.zeros(dtype = 'f4', shape = grid_shape)}
+
+    grid_right_edge = grid_left_edge + np.array(grid_shape) * cell_width
+    bbox = np.stack([grid_left_edge, grid_right_edge], axis = 1)
+
+    tmp_ds = yt.load_uniform_grid(data = data, domain_dimensions = grid_shape,
+                                  bbox = bbox,
+                                  periodicity = (False, False, False))
+
+    itr = ray_values_startend(tmp_ds, start_end_pairs, fields = [],
+                              find_indices = True)
+    return [(elem['indices'], elem['dl']) for elem in itr]
+
+def test_simple_traverse_grid_comparison():
+
+    _1way_start_end_input_pairs = [
+        ([80, 1.0, 2.0], [-60, 1.0, 2.0]),
+        ([20, 0.0, 2.0], [20.0, 20.0, 2.0]),
+        ([20, 1.0, -10.0], [20.0, 1.0, 10.0]),
+        # need to improve the comparison function for the following case...
+        #([20, 0.0, 2.0], [40, 20.0, 0.0])
+    ]
+    # reverse the directions
+    start_end_pairs = []
+    for pair in _1way_start_end_input_pairs:
+        start_end_pairs.append(pair)
+        start_end_pairs.append(pair[::-1])
+
+    kwargs = {'start_end_pairs' : start_end_pairs,
+              'grid_left_edge' : np.array([-60, 0.0, -10.]),
+              'cell_width' : np.array([1.0,1.0,1.0]),
+              'grid_shape' : (120,20,20) }
+
+    rslt_ref = traverse_grid_startend_comparison(**kwargs)
+    rslt_alt = traverse_grid_startend(**kwargs)
+
+    for i, (start, end) in enumerate(kwargs['start_end_pairs']):
+        # -> a more sophisticated case, would examine the case where we have
+        #    slightly different numbers of cells
+        # -> we would need to decide on the particular cases for raising an
+        #    error:
+        #    -> one thought is we could say its okay to be missing a particular
+        #       cell if the path through that cell is essentially negligible
+        #    -> an alternative related thought is we could compare the total
+        #       length of the ray...
+        #print(np.sum(rslt_alt[i][1]), np.sum(rslt_ref[i][1]))
+
+        np.testing.assert_array_equal(
+            x = rslt_alt[i][0], y = rslt_ref[i][0],
+            err_msg = ("unequal intersection indices while comparing a "
+                       f"ray that starts at {start} and ends at {end}")
+        )
+        np.testing.assert_allclose(
+            actual = rslt_alt[i][1], desired = rslt_ref[i][1],
+            rtol = 6e-15, atol = 0.0,
+            err_msg = ("unequal intersection path-lengths while comparing a "
+                       f"ray that starts at {start} and ends at {end}")
+        )
+
+# WE NEED TESTS OF LOTS OF EDGE CASES!
+
 if __name__ == '__main__':
     test_traverse_grid_small_truncation_probs()
     test_traverse_grid2()
+    test_simple_traverse_grid_comparison()

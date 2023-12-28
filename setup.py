@@ -20,6 +20,8 @@ ext_modules = [
               ['gasimage/_ray_intersections_cy.pyx']),
     Extension('gasimage._generate_spec_cy',
               ['gasimage/_generate_spec_cy.pyx']),
+    #Extension('gasimage.utilts._ArrayDict_cy',
+    #          ['gasimage/utils/_ArrayDict_cy.pyx']),
 ]
 
 # on some platforms, we need to apply the language level directive before setup

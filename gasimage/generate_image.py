@@ -26,6 +26,7 @@ from .accumulators import (
 from ._ray_intersections_cy import ray_box_intersections, traverse_grid
 from .ray_collection import ConcreteRayList
 from .utils.misc import _has_consistent_dims
+from .rt_config import default_spin_flip_props
 
 def _first_or_default(itr, default=None):
     # returns the first element of the iterator/iterable or a default value.
@@ -387,7 +388,7 @@ def generate_image(accum_strat, ray_collection, ds, *,
 
         # now get an instance of the dataset
         if isinstance(ds, yt.data_objects.static_output.Dataset):
-            if not isinstance(pool, schwimmbad.SerialPool):
+            if not isinstance(pool, _DummySerialPool):
                 raise ValueError("When ds is a dataset object, pool must be "
                                  "assigned a schwimmbad.SerialPool instance.")
             else:
@@ -515,12 +516,17 @@ def generate_image(accum_strat, ray_collection, ds, *,
     accum_strat.post_process_rslt(out_dict)
 
     # massage the output shape
-    if len(ray_collection.shape) == 1:
+    if ray_collection.shape == (1,):
         for name, _, shape in rslt_props:
-            assert out_dict_2D.shape == (shape[0],1)
+            assert out_dict_2D[name].shape == (shape[0],1)
             out_dict[name] = np.squeeze(out_dict[name])
     return out_dict
 
+def freq_from_v_channels(v_channels, line_props):
+    if not _has_consistent_dims(v_channels, unyt.dimensions.velocity):
+        raise ValueError("v_channels has the wrong units")
+    rest_freq = line_props.freq_quantity
+    return (rest_freq * (1 + v_channels/unyt.c_cgs)).to('Hz')
 
 # define the legacy interface for backwards compatability!
 def optically_thin_ppv(v_channels, ray_collection, ds,
@@ -597,12 +603,12 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
     """
 
     # create the accum_strat
-    rest_freq = 1.4204058E+09*unyt.Hz,
+    line_props = default_spin_flip_props()
     accum_strat = OpticallyThinAccumStrat(
-        obs_freq = (rest_freq*(1+v_channels/unyt.c_cgs)).to('Hz'),
+        obs_freq = freq_from_v_channels(v_channels, line_props),
         use_cython_gen_spec = use_cython_gen_spec,
         misc_kwargs = {
-            'rest_freq' : rest_freq,
+            'rest_freq' : line_props.freq_quantity,
             'doppler_parameter_b' : doppler_parameter_b,
             'ndens_HI_n1state_field' : ndens_HI_n1state,
         }

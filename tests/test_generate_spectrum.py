@@ -16,7 +16,7 @@ from gasimage._generate_spec_cy import (
 )
 
 from gasimage.rt_config import (
-    default_halpha_props, crude_H_partition_func
+    builtin_halpha_props, crude_H_partition_func
 )
 
 
@@ -258,58 +258,15 @@ def test_generate_ray_spectrum():
                                 seed = 12345, rtol = 2e-12)
     _test_generate_ray_spectrum(nfreq = 201, ngas = 100, zero_vlos = True,
                                 seed = 34432, rtol = 4e-15)
-
-def plot_helper(obs_freq, dz_vals, integrated_source, total_tau, debug_info,
-                plot_debug = False):
-    import matplotlib.pyplot as plt
-
-    I_unit = (r'$\left[\frac{{\rm erg}}{{\rm cm}^{2}\ {\rm s}\ '
-              r'{\rm ster}\ {\rm Hz}}\right]$')
-
-    wave = (unyt.c_cgs/obs_freq).to('nm')
-
-    if not plot_debug:
-        fig,ax_arr = plt.subplots(2,1, figsize = (4,8), sharex = True)
-        ax_arr[0].plot(wave, integrated_source)
-        ax_arr[1].plot(wave, total_tau)
-        ax_arr[1].set_xlabel('wavelength (nm)')
-        ax_arr[0].set_ylabel(r'$I_\nu(z)$ ' + I_unit)
-        ax_arr[1].set_ylabel(r'$\tau_\nu$')
-    else:
-        tau, source_func = debug_info
-
-        tau_midpoint = 0.5*(tau[:,:-1] + tau[:,1:])
-        fig, ax_arr = plt.subplots(3,1, figsize = (4,8))
-        ax_arr[0].plot(source_func[0,:])
-
-        center_f = obs_freq.size//2
-        for freq_ind in [0,center_f//4, center_f//2, 3*center_f//4, center_f]:
-            ax_arr[1].plot(tau[freq_ind, :])
-            label = (r'$\lambda$ = ' +
-                     f'{float(wave[freq_ind].to("nm").v):.3f} nm')
-            ax_arr[2].plot(tau_midpoint[freq_ind, :], source_func[freq_ind,:],
-                           label = label)
-
-        ax_arr[0].set_ylabel(r'$S_\nu(z)$ ' + I_unit)
-        ax_arr[1].set_ylabel(r'$\tau_\nu(z)$')
-        for i in range(2):
-            ax_arr[i].set_xlabel('depth')
-        ax_arr[2].set_ylabel(r'$S_\nu(\tau_\nu)$ ' + I_unit)
-        ax_arr[2].set_xlabel(r'$\tau_\nu$')
-
-        ax_arr[2].set_xlim(0,2)
-        ax_arr[2].legend()
-    fig.tight_layout()
-    plt.show()
     
-    
+from debug_plotting import plot_ray_spectrum as plot_helper
 
 def _test_generate_noscatter_ray_spectrum(nfreq = 401, ngas = 100,
                                           zero_vlos = True,
                                           nominal_dz = (0.25/100) * unyt.pc,
                                           seed = 12345):
 
-    line_props = default_halpha_props()
+    line_props = builtin_halpha_props()
     partition_func = crude_H_partition_func(electronic_state_max = 20)
 
     data = _gen_test_data(rest_freq = line_props.freq_quantity, nfreq = nfreq,
@@ -364,7 +321,7 @@ def _test_cmp_generate_ray_spectrum(nfreq = 401, ngas = 100,
     print('\nray-gen comparison')
 
     
-    line_props = default_halpha_props()
+    line_props = builtin_halpha_props()
     partition_func = crude_H_partition_func(electronic_state_max = 20)
     rest_freq = line_props.freq_quantity
 

@@ -12,7 +12,7 @@ from gasimage.utils.testing import assert_allclose_units
 
 _REF_REST_FREQ = np.float32(1.4204058E+09)*unyt.Hz
 
-def _dummy_create_field_callback(ds):
+def _dummy_create_field_callback(ds, use_trident_ion = False):
     # this is a simple function to make define the ('gas','temperature') &
     # ('gas', 'H_p0_number_density') fields. Our calculation of the latter
     # involves some massive simplifying assumptions!
@@ -28,15 +28,24 @@ def _dummy_create_field_callback(ds):
                  sampling_type = 'local', take_log = True,
                  units = 'K')
 
-    # create nH_I field
-    def _nH_I(field,data):
-        HydrogenFractionByMass, ifrac = 0.72, 0.0 # fairly arbitrary values
-        rho_HI = data['density']* HydrogenFractionByMass * (1.0-ifrac)
-        n_HI = rho_HI/unyt.mh_cgs
-        return n_HI
-    ds.add_field(('gas', 'H_p0_number_density'), function = _nH_I,
-                 sampling_type = 'local', units = 'auto', take_log = True,
-                 dimensions = unyt.dimensions.number_density)
+    if use_trident_ion:
+        # let's be explicit about exactly which ionization table is used
+        import trident
+        trident.add_ion_fields(
+            ds, ions=['H I'],
+            ionization_table = os.path.expanduser('~/.trident/hm2012_hr.h5')
+        )
+    else:
+
+        # create nH_I field
+        def _nH_I(field,data):
+            HydrogenFractionByMass, ifrac = 0.72, 0.0 # fairly arbitrary values
+            rho_HI = data['density']* HydrogenFractionByMass * (1.0-ifrac)
+            n_HI = rho_HI/unyt.mh_cgs
+            return n_HI
+        ds.add_field(('gas', 'H_p0_number_density'), function = _nH_I,
+                     sampling_type = 'local', units = 'auto', take_log = True,
+                     dimensions = unyt.dimensions.number_density)
 
 def _create_raw_ppv(enzoe_sim_path,
                     sky_delta_latitude_arr_deg,
