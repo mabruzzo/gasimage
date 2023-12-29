@@ -630,6 +630,190 @@ def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
 
 ####### DOWN HERE WE DEFINE STUFF RELATED TO FULL (NO-SCATTER) RT
 
+# We construct a new IntegralStructNoScatterRT for every ray
+# -> it essentially tracks the output variables and the scratch-space used
+#    while performing the integral
+# -> in the future, I would like to make this a c++ class
+cdef struct IntegralStructNoScatterRT:
+    # this specifies the length of all pointers held by this struct
+    Py_ssize_t nfreq
+
+    # the next 2 variables are accumulator variables that serve as outputs
+    # -> they each accumulate values separately for each considered frequency
+    # -> their lifetimes are externally managed
+    double* total_tau
+    double* integrated_source
+
+    # this last variable is managed by the struct (we use it to cache
+    # expensive exponential evaluations)
+    double* segStart_expNegTau
+
+cdef IntegralStructNoScatterRT prep_IntegralStructNoScatterRT(
+    double[::1] total_tau, double[::1] integrated_source):
+    # the nfreq field of the resulting struct is set to 0 if this function
+    # encounters issues
+
+    cdef IntegralStructNoScatterRT out
+    if ((total_tau.shape[0] == 0) or
+        (total_tau.shape[0] != integrated_source.shape[0])):
+        out.nfreq = 0
+        return out
+
+    out.nfreq = total_tau.shape[0]
+    out.total_tau = &total_tau[0]
+    out.integrated_source = &integrated_source[0]
+    out.segStart_expNegTau = <double*> PyMem_Malloc(sizeof(double) * out.nfreq)
+    if out.segStart_expNegTau == NULL:
+        out.nfreq = 0
+    return out
+
+cdef void clean_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj):
+    if ((obj.nfreq > 0) and (obj.segStart_expNegTau != NULL)):
+        PyMem_Free(obj.segStart_expNegTau)
+
+
+cpdef solve_noscatter_rt(const double[::1] source_function,
+                         const double[:,:] absorption_coef,
+                         const double[::1] dz):
+    """
+    Solves for the optical depth and the integrated source_function diminished
+    by absorption.
+
+    Each input arg is an array. For each arg, the
+    index of the trailing axis corresponds to position along a ray. 
+      - `arr[...,0]` specifies the value at the location closest to the observer
+      - `arr[...,-1]` specifies the value at the location furthest from the
+        observer.
+    To put it another way, light moves from high index to low index. 
+    Alternatively, as we increase index, we move "backwards along the ray.
+
+    Parameters
+    ----------
+    source_function: `unyt.unyt_array`, shape(ngas)
+        The source function. This is 1D because we only consider line-profile
+        to have frequency dependence. And that term cancels out when computing
+        the source function.
+    absorption_coef: `unyt.unyt_array`, shape(nfreq,ngas)
+        The linear absorption coefficient
+    dz : `unyt.unyt_array`, shape(ngas,)
+        The distance travelled by the ray through each cell (in cm).
+
+    Returns
+    -------
+    optical_depth: `numpy.ndarray`, shape(nfreq,)
+        Holds the integrated optical depth over the entire ray.
+    integrated_source: ndarray, shape(nfreq,)
+        Holds the integrated_source function as a function of frequency. This 
+        is also the total intensity if there is no background intensity. If
+        the background intensity is given by ``bkg_intensity`` (an array where
+        theat varies with frequency), then the total intensity is just
+        ``bkg_intensity*np.exp(-tau[:, -1]) + integrated_source``.
+
+    Notes
+    -----
+    Our definition of optical depth, differs from Rybicki and Lightman. They
+    would define the maximum optical depth at the observer's location. Our
+    choice of definition is a little more consistent with the choice used in
+    the context of stars.
+
+    We are essentially solving the following 2 equations:
+
+    .. math::
+
+      \tau_\nu (s) = \int_{s}^{s_0} \alpha_\nu(s^\prime)\, ds^\prime
+
+    and
+
+    .. math::
+
+      I_\nu (\tau_\nu=0) =  I_\nu(\tau_\nu)\, e^{-\tau_\nu} + f,
+
+    where :math:`f`, the integral term, is given by:
+
+    .. math::
+
+      f = -\int_{\tau_\nu}^0  S_\nu(\tau_\nu^\prime)\, e^{-\tau_\nu^\prime}\, d\tau_\nu^\prime.
+
+    """
+
+    # we are effectively solving the following integral (dependence on
+    # frequency is dropped to simplify notation)
+    #     f = -∫ S(𝜏) * exp(-𝜏) d𝜏 integrated from 𝜏 to 0
+    # We are integrating the light as it moves from the far end of the ray
+    # towards the observer.
+    #
+    # We can reverse this integral so we are integrating along the ray from
+    # near to far
+    #     f = ∫ S(𝜏) * exp(-𝜏) d𝜏 integrated from 0 to 𝜏
+    #
+    # Now let's break this integral up into N segments
+    #
+    #    f = ∑_(i=0)^(N-1) ∫_i S(𝜏) * exp(-𝜏) d𝜏
+    # - each integral integrates between 𝜏_i and 𝜏_(i+1) (which correspond to
+    #   the tau values at the edges of each segment.
+    #
+    # Now if we assume that S(𝜏) has a constant value S_i we can pull S_i out
+    # of the integral and solve the integral analytically.
+    # ->  ∫ exp(-𝜏) d𝜏 from 𝜏_i to 𝜏_(i+1) is
+    #           -exp(-𝜏_(i+1)) - (-exp(-𝜏_i))
+    #     OR equivalently, it's
+    #           exp(-𝜏_i) - exp(-𝜏_(i+1))
+    #
+    # Putting this togeter, we find that:
+    #    f = ∑_(i=0)^(N-1) S_i * ( exp(-𝜏_i) - exp(-𝜏_(i+1)) )
+
+    cdef Py_ssize_t num_segments = dz.size
+    cdef Py_ssize_t nfreq = absorption_coef.shape[0]
+
+    cdef Py_ssize_t freq_i, pos_i # indexing variables
+
+    # allocate scratch space
+    cdef double* segStart_expNegTau = <double*> PyMem_Malloc(
+        sizeof(double) * nfreq)
+
+    # allocate output variable
+    _integral_term = np.zeros(shape=(nfreq,), dtype = 'f8')
+    cdef double[::1] integral_term = _integral_term
+    _tau = np.empty(shape = (nfreq,), dtype = 'f8')
+    cdef double[::1] tau = _tau
+
+    # initialize the variables so that they have the correct values for the
+    # starting segment of the for
+    for freq_i in range(nfreq):
+        # at the end of the ray, closest to the observer
+        # -> tau = 0.0 & exp(-tau) = 1.0
+        tau[freq_i] = 0.0
+        segStart_expNegTau[freq_i] = 1.0
+
+    cdef double diff, cur_segEnd_expNegTau # variables used inside for-loop
+
+    for pos_i in range(num_segments):
+        for freq_i in range(nfreq):
+            # part 1: update tau[freq_i] so that it holds the optical-depth at
+            #         the end of the current segment
+            # -> we defined tau so that it is increasing as we move away from
+            #    the observer
+            # -> higher indices of dz are further from observer
+            tau[freq_i] += absorption_coef[freq_i,pos_i] * dz[pos_i]
+
+            # part 2: perform the integral over the current segment
+
+            # compute the value of exp(-tau) at the end of the current segment
+            cur_segEnd_expNegTau = exp_f64(-_tau[freq_i])
+
+            # now update the integrated source term
+            diff = segStart_expNegTau[freq_i] - cur_segEnd_expNegTau
+            integral_term[freq_i] += (source_function[pos_i] * diff)
+
+            # prepare for next segment (the value of expNegTau at the end of
+            # the current segment is the value at the start of the next segment)
+            segStart_expNegTau[freq_i] = cur_segEnd_expNegTau
+
+    PyMem_Free(segStart_expNegTau)
+
+    return _tau, _integral_term
+
+
 def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
                                     full_ray_start, full_ray_uvec,
                                     obs_freq, line_props, partition_func,
@@ -864,144 +1048,3 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
     )
 
     return integrated_source, tau
-
-cpdef solve_noscatter_rt(const double[::1] source_function,
-                         const double[:,:] absorption_coef,
-                         const double[::1] dz):
-    """
-    Solves for the optical depth and the integrated source_function diminished
-    by absorption.
-
-    Each input arg is an array. For each arg, the
-    index of the trailing axis corresponds to position along a ray. 
-      - `arr[...,0]` specifies the value at the location closest to the observer
-      - `arr[...,-1]` specifies the value at the location furthest from the
-        observer.
-    To put it another way, light moves from high index to low index. 
-    Alternatively, as we increase index, we move "backwards along the ray.
-
-    Parameters
-    ----------
-    source_function: `unyt.unyt_array`, shape(ngas)
-        The source function. This is 1D because we only consider line-profile
-        to have frequency dependence. And that term cancels out when computing
-        the source function.
-    absorption_coef: `unyt.unyt_array`, shape(nfreq,ngas)
-        The linear absorption coefficient
-    dz : `unyt.unyt_array`, shape(ngas,)
-        The distance travelled by the ray through each cell (in cm).
-
-    Returns
-    -------
-    optical_depth: `numpy.ndarray`, shape(nfreq,)
-        Holds the integrated optical depth over the entire ray.
-    integrated_source: ndarray, shape(nfreq,)
-        Holds the integrated_source function as a function of frequency. This 
-        is also the total intensity if there is no background intensity. If
-        the background intensity is given by ``bkg_intensity`` (an array where
-        theat varies with frequency), then the total intensity is just
-        ``bkg_intensity*np.exp(-tau[:, -1]) + integrated_source``.
-
-    Notes
-    -----
-    Our definition of optical depth, differs from Rybicki and Lightman. They
-    would define the maximum optical depth at the observer's location. Our
-    choice of definition is a little more consistent with the choice used in
-    the context of stars.
-
-    We are essentially solving the following 2 equations:
-
-    .. math::
-
-      \tau_\nu (s) = \int_{s}^{s_0} \alpha_\nu(s^\prime)\, ds^\prime
-
-    and
-
-    .. math::
-
-      I_\nu (\tau_\nu=0) =  I_\nu(\tau_\nu)\, e^{-\tau_\nu} + f,
-
-    where :math:`f`, the integral term, is given by:
-
-    .. math::
-
-      f = -\int_{\tau_\nu}^0  S_\nu(\tau_\nu^\prime)\, e^{-\tau_\nu^\prime}\, d\tau_\nu^\prime.
-
-    """
-
-    # we are effectively solving the following integral (dependence on
-    # frequency is dropped to simplify notation)
-    #     f = -∫ S(𝜏) * exp(-𝜏) d𝜏 integrated from 𝜏 to 0
-    # We are integrating the light as it moves from the far end of the ray
-    # towards the observer.
-    #
-    # We can reverse this integral so we are integrating along the ray from
-    # near to far
-    #     f = ∫ S(𝜏) * exp(-𝜏) d𝜏 integrated from 0 to 𝜏
-    #
-    # Now let's break this integral up into N segments
-    #
-    #    f = ∑_(i=0)^(N-1) ∫_i S(𝜏) * exp(-𝜏) d𝜏
-    # - each integral integrates between 𝜏_i and 𝜏_(i+1) (which correspond to
-    #   the tau values at the edges of each segment.
-    #
-    # Now if we assume that S(𝜏) has a constant value S_i we can pull S_i out
-    # of the integral and solve the integral analytically.
-    # ->  ∫ exp(-𝜏) d𝜏 from 𝜏_i to 𝜏_(i+1) is
-    #           -exp(-𝜏_(i+1)) - (-exp(-𝜏_i))
-    #     OR equivalently, it's
-    #           exp(-𝜏_i) - exp(-𝜏_(i+1))
-    #
-    # Putting this togeter, we find that:
-    #    f = ∑_(i=0)^(N-1) S_i * ( exp(-𝜏_i) - exp(-𝜏_(i+1)) )
-
-    cdef Py_ssize_t num_segments = dz.size
-    cdef Py_ssize_t nfreq = absorption_coef.shape[0]
-
-    cdef Py_ssize_t freq_i, pos_i # indexing variables
-
-    # allocate scratch space
-    cdef double* segStart_expNegTau = <double*> PyMem_Malloc(
-        sizeof(double) * nfreq)
-
-    # allocate output variable
-    _integral_term = np.zeros(shape=(nfreq,), dtype = 'f8')
-    cdef double[::1] integral_term = _integral_term
-    _tau = np.empty(shape = (nfreq,), dtype = 'f8')
-    cdef double[::1] tau = _tau
-
-    # initialize the variables so that they have the correct values for the
-    # starting segment of the for
-    for freq_i in range(nfreq):
-        # at the end of the ray, closest to the observer
-        # -> tau = 0.0 & exp(-tau) = 1.0
-        tau[freq_i] = 0.0
-        segStart_expNegTau[freq_i] = 1.0
-
-    cdef double diff, cur_segEnd_expNegTau # variables used inside for-loop
-
-    for pos_i in range(num_segments):
-        for freq_i in range(nfreq):
-            # part 1: update tau[freq_i] so that it holds the optical-depth at
-            #         the end of the current segment
-            # -> we defined tau so that it is increasing as we move away from
-            #    the observer
-            # -> higher indices of dz are further from observer
-            tau[freq_i] += absorption_coef[freq_i,pos_i] * dz[pos_i]
-
-            # part 2: perform the integral over the current segment
-
-            # compute the value of exp(-tau) at the end of the current segment
-            cur_segEnd_expNegTau = exp_f64(-_tau[freq_i])
-
-            # now update the integrated source term
-            diff = segStart_expNegTau[freq_i] - cur_segEnd_expNegTau
-            integral_term[freq_i] += (source_function[pos_i] * diff)
-
-            # prepare for next segment (the value of expNegTau at the end of
-            # the current segment is the value at the start of the next segment)
-            segStart_expNegTau[freq_i] = cur_segEnd_expNegTau
-
-    PyMem_Free(segStart_expNegTau)
-
-    return _tau, _integral_term
