@@ -348,9 +348,13 @@ def _test_cmp_generate_ray_spectrum(nfreq = 401, ngas = 100,
     def _customize_kwargs(fn, kwargs):
         if fn == _generate_noscatter_spectrum_cy:
             out = kwargs.copy()
-            out['kinetic_T'] = kwargs['kinetic_T'].to('K').ndview
-            out['dz'] = kwargs['dz'].to('cm').ndview
-            out['ndens'] = kwargs['ndens'].to('cm**-3').ndview
+            expected_kw_u_pairs = [
+                ('obs_freq', 'Hz'), ('vLOS', 'cm/s'), ('ndens', 'cm**-3'),
+                ('doppler_parameter_b', 'cm/s'), ('kinetic_T', 'K'),
+                ('dz', 'cm'),
+            ]
+            for (kw, u) in expected_kw_u_pairs:
+                out[kw] = kwargs[kw].to(u).ndview
             return out
         return kwargs
 

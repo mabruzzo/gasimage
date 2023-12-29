@@ -800,6 +800,11 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
 
     out_l = []
 
+    check_consistent_arg_dims(obs_freq, unyt.dimensions.frequency, 'obs_freq')
+    assert obs_freq.ndim == 1
+    assert str(obs_freq.units) == 'Hz'
+    cdef const double[::1] obs_freq_Hz = obs_freq.ndview
+
     try:
 
         for i in range(nrays):
@@ -824,7 +829,7 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
             # correctness of the velocity sign
             vlos = (ray_uvec[0] * vx_vals[idx] +
                     ray_uvec[1] * vy_vals[idx] +
-                    ray_uvec[2] * vz_vals[idx]).to('cm/s')
+                    ray_uvec[2] * vz_vals[idx]).to('cm/s').ndview
 
             kinetic_T = grid['gas','temperature'][idx].to('K').ndview
 
@@ -832,11 +837,11 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
             cur_doppler_parameter_b = _calc_doppler_parameter_b(
                 grid, idx3Darr=tmp_idx, approach = 'normal',
                 particle_mass_in_grams = particle_mass_g
-            ).to('cm/s')
+            ).to('cm/s').ndview
 
             ndens = grid[ndens_field][idx].to('cm**-3').ndview
             tmp = _generate_noscatter_spectrum_cy(
-                line_props = line_props, obs_freq = obs_freq,
+                line_props = line_props, obs_freq = obs_freq_Hz,
                 vLOS = vlos, ndens = ndens, kinetic_T = kinetic_T,
                 doppler_parameter_b = cur_doppler_parameter_b,
                 dz = dz,
@@ -862,9 +867,14 @@ class NdensRatio:
     hi_div_lo: np.ndarray
 
 @cython.wraparound(False)
-def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
-                                    kinetic_T, doppler_parameter_b, dz,
-                                    level_pops_arg):
+def _generate_noscatter_spectrum_cy(object line_props,
+                                    const double[::1] obs_freq,
+                                    const double[::1] vLOS,
+                                    object ndens,
+                                    object kinetic_T,
+                                    const double[::1] doppler_parameter_b,
+                                    const double[::1] dz,
+                                    object level_pops_arg):
     """
     Compute the specific intensity (aka monochromatic intensity) and optical
     depth from data measured along the path of a single ray.
@@ -886,7 +896,7 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
     ----------
     obs_freq : unyt.unyt_array, shape(nfreq,)
         An array of frequencies to perform rt at.
-    vLOS : unyt.unyt_array, shape(ngas,)
+    vLOS : np.ndarray, shape(ngas,)
         Velocities of the gas in cells along the ray (in cm/s).
     ndens : np.ndarray, shape(ngas,)
         The number density in cells along the ray (in cm**-3). The exact
@@ -970,23 +980,6 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
 
     cdef double[::1] n2g1_div_n1g2 = _n2g1_div_n1g2
 
-    # compute the line_profiles
-    #_profiles = full_line_profile_evaluation(
-    #    obs_freq = obs_freq,
-    #    doppler_parameter_b = doppler_parameter_b,
-    #    rest_freq = line_props.freq_quantity,
-    #    velocity_offset = vLOS).ndview
-    #cdef double[:,:] profiles = _profiles
-
-    obs_freq = obs_freq.to('Hz').ndview
-    cdef const double[::1] obs_freq_Hz = obs_freq
-
-    _velocities = vLOS.to('cm/s').ndview
-    cdef const double[::1] velocities = _velocities
-
-    doppler_parameter_b = doppler_parameter_b.to('cm/s').ndview
-    cdef const double[::1] my_doppler_parameter_b = doppler_parameter_b
-
     # up above we do some precalculations!
     #
     # Down blow we actually perform the integral!
@@ -1032,10 +1025,10 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
                         stim_emission_correction) / (4*np.pi)
 
         # construct the profile for the current gas-element
-        prof = prep_LineProfHelper(rest_freq_Hz, my_doppler_parameter_b[pos_i],
-                                   velocities[pos_i])
+        prof = prep_LineProfHelper(rest_freq_Hz, doppler_parameter_b[pos_i],
+                                   vLOS[pos_i])
         for freq_i in range(nfreq):
-            profile_val = eval_line_profile(obs_freq_Hz[freq_i], rest_freq_Hz,
+            profile_val = eval_line_profile(obs_freq[freq_i], rest_freq_Hz,
                                             prof)
             alpha_nu_cgs[freq_i] = alpha_center * profile_val
 
