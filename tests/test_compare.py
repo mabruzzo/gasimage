@@ -221,7 +221,7 @@ from debug_plotting import plot_ray_spectrum, plot_rel_err
 
 # We are going to setup 2
 
-def test_wip(indata_dir):
+def test_compare_full_noscatter_rt(indata_dir):
     enzoe_sim_path = os.path.join(
         indata_dir, ('X100_M1.5_HD_CDdftCstr_R56.38_logP3_Res8/cloud_07.5000/'
                      'cloud_07.5000.block_list')
@@ -274,14 +274,14 @@ def test_wip(indata_dir):
 
     assert_allclose_units(
         actual = actual_rslt['integrated_source'],
-        desired = alt_rslt['integrated_source'], rtol = 4e-10, atol=0,
+        desired = alt_rslt['integrated_source'], rtol = 3e-9, atol=0,
         err_msg = ("error occured while comparing the integrated_source with "
                    "the result from a simpler (slower) implementation")
     )
 
     np.testing.assert_allclose(
         actual = actual_rslt['total_tau'], desired = alt_rslt['total_tau'],
-        rtol = 9e-12, atol=0,
+        rtol = 2e-10, atol=0,
         err_msg = ("error occured while comparing the total optical depth with "
                    "the result from a simpler (slower) implementation")
     )
@@ -315,7 +315,7 @@ def _dumber_full_noscatter_rt(accum_strat, concrete_ray_list, ds):
                 uvec[1] * ray_data['gas','velocity_y'] +
                 uvec[2] * ray_data['gas','velocity_z']).to('cm/s')
 
-        if True: # this is the older "wrong" behavior
+        if False: # this is the older "legacy" behavior (it's wrong!)
             doppler_parameter_b = np.sqrt(
                 2.0 * unyt.kboltz_cgs * ray_data['gas','temperature'] /
                 (ray_data['gas','mean_molecular_weight'] * unyt.mh_cgs)
@@ -341,23 +341,3 @@ def _dumber_full_noscatter_rt(accum_strat, concrete_ray_list, ds):
 
     return {'integrated_source' : integrated_source,
             'total_tau' : integrated_tau}
-
-def full_rt(accum_strat, concrete_ray_list, ds):
-    pass
-
-
-# we can write 2 sets of tests:
-#  - First, we can perform RT on the outputs of collect_ray_values
-#  - Second, we can compare the accuracy of
-#    collect_ray_values(ds, start_end_pairs, fields) and our traverse grid
-#    function
-
-
-
-
-
-# perform a comparison of 3 or 4 function calls
-# -> use result of collect_ray_values and do all RT in one-shot
-# -> use result of collect_ray_values and check that result is consistent when
-#    we subdivide the region of rt
-# -> use the full-blown API

@@ -557,15 +557,19 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
         (neutral Hydrogen) in the electronic ground state (i.e. the electron is
         in the n=1 orbital). By default, this is the number density of all
         H I atoms. This approximation is discussed below in the notes.
-    doppler_parameter_b: `unyt.unyt_quantity`, Optional
+    doppler_parameter_b: `unyt.unyt_quantity` or `str`
         Optional parameter that can be used to specify the Doppler parameter
         (aka Doppler Broadening parameter) assumed for every cell of the
-        simulation. When not specified, this is computed from the local
-        temperature (and mean-molecular-weight). To avoid any ambiguity, this
-        quantity has units consistent with velocity, this quantity is commonly
-        represented by the variable ``b``, and ``b/sqrt(2)`` specifies the
-        standard deviation of the line-of-sight velocity component. Note that
-        ``b * rest_freq / (unyt.c_cgs * sqrt(2))`` specifies the standard
+        simulation. A value of 'normal' will use the correct formula (this is
+        the preferred behavior) for computing the value from the local 
+        temperature. When this is passed 'legacy', we will use the incorrect
+        legacy formula (it involves using mean-molecular-mass instead of
+        aborber/emitter mass). When not specified, this is computed from the
+        local temperature (and mean-molecular-weight). To avoid any ambiguity,
+        this quantity has units consistent with velocity, this quantity is
+        commonly represented by the variable ``b``, and ``b/sqrt(2)`` specifies
+        the standard deviation of the line-of-sight velocity component. Note
+        that ``b * rest_freq / (unyt.c_cgs * sqrt(2))`` specifies the standard
         deviation of the line-profile for the transition that occurs at a rest
         frequency of ``rest_freq``.
     use_cython_gen_spec: bool, optional

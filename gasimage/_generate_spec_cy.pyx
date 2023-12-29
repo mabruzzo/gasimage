@@ -286,6 +286,10 @@ from .utils.misc import check_consistent_arg_dims, _has_consistent_dims
 # -> a potential optimization my be to treat the extension types as structs
 #    (and avoid attaching methods to them)
 
+# NOTE: I would like to refactor things so that temperature_arr is not stored
+# as an attribute... Instead, I want to pass a single value temperature as an
+# argument
+
 cdef class ScalarDopplerParameter:
     cdef double doppler_parameter_b_cm_per_s
 
@@ -308,7 +312,6 @@ DEF _MH_CGS = 1.6737352238051868e-24
 # = yt.units.kboltz_cgs
 DEF _KBOLTZ_CGS = 1.3806488e-16
 
-# not used quite yet
 cdef class DopplerParameterFromTemperature:
     cdef double[:,:,::1] temperature_arr
     cdef double inv_particle_mass_cgs
@@ -389,25 +392,28 @@ cdef class DopplerParameterFromTemperatureMMW:
 
 ctypedef fused FusedDopplerParameterType:
     ScalarDopplerParameter
-    DopplerParameterFromTemperatureMMW
+    DopplerParameterFromTemperature
+    DopplerParameterFromTemperatureMMW # the "wrong" legacy approach
 
-def _construct_Doppler_Parameter_Approach(grid, approach):
+def _construct_Doppler_Parameter_Approach(grid, approach,
+                                          particle_mass_in_grams = None):
     if (approach is None):
-        return DopplerParameterFromTemperatureMMW(grid)
-    #elif isinstance(approach,str):
-    #    if approach == 'eint':
-    #        assert ('enzoe','internal_energy') in grid.ds.field_list
-    #        return DopplerParameterFromSpecificEint(grid)
-    #    elif approach == 'temperature':
-    #        return DopplerParameterFromTemperatureMMW(grid)
-    #    else:
-    #        raise ValueError(
-    #            "when doppler_parameter_b approach is a str, it must be "
-    #            f"'eint' or 'temperature', not {approach!r}")
+        raise RuntimeError("The default approach for computing the Doppler "
+                           "Parameter is changing!")
+    elif isinstance(approach,str):
+        if approach == 'legacy':
+            return DopplerParameterFromTemperatureMMW(grid)
+        elif approach == 'normal':
+            return DopplerParameterFromTemperature(grid, particle_mass_in_grams)
+        else:
+            raise ValueError(
+                "when doppler_parameter_b approach is a str, it must be "
+                f"'legacy' or 'normal', not {approach!r}")
     else:
         return ScalarDopplerParameter(approach)
 
-def _calc_doppler_parameter_b(grid,idx3Darr, approach = None):
+def _calc_doppler_parameter_b(grid, idx3Darr, approach = None,
+                              particle_mass_in_grams = None):
     """
     Compute the Doppler parameter (aka Doppler broadening parameter) of the gas
     in cells specified by the inidices idx.
@@ -429,12 +435,16 @@ def _calc_doppler_parameter_b(grid,idx3Darr, approach = None):
     (THIS IS DEFINED FOR BACKWARDS COMPATABILITY)
     """
     out = np.empty(shape = (idx3Darr.shape[1],), dtype = 'f8')
-    tmp = _construct_Doppler_Parameter_Approach(grid, approach)
+    tmp = _construct_Doppler_Parameter_Approach(
+        grid, approach, particle_mass_in_grams = particle_mass_in_grams)
     if isinstance(tmp, ScalarDopplerParameter):
         (<ScalarDopplerParameter>tmp).get_vals_cm_per_s(
             idx3Darr = idx3Darr, out = out)
     elif isinstance(tmp, DopplerParameterFromTemperatureMMW):
         (<DopplerParameterFromTemperatureMMW>tmp).get_vals_cm_per_s(
+            idx3Darr = idx3Darr, out = out)
+    elif isinstance(tmp, DopplerParameterFromTemperature):
+        (<DopplerParameterFromTemperature>tmp).get_vals_cm_per_s(
             idx3Darr = idx3Darr, out = out)
     else:
         raise RuntimeError("SOMETHING IS WRONG")
@@ -490,9 +500,11 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     # now, get versions of velocity components without units
     vx, vy, vz = tmp_vx.ndview, tmp_vy.ndview, tmp_vz.ndview
 
-
+    # currently, this function can only be used for the 21 spin-flip transition
+    # -> consequently, we ALWAY specify that the particle mass is that of a
+    #    Hydrogen atom!
     doppler_parameter_b = _construct_Doppler_Parameter_Approach(
-        grid, approach = doppler_parameter_b
+        grid, approach = doppler_parameter_b, particle_mass_in_grams = _MH_CGS
     )
 
     return _generate_ray_spectrum(
@@ -660,7 +672,8 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
 
             #TODO: use particle_mass_g to compute the doppler parameter
             cur_doppler_parameter_b = _calc_doppler_parameter_b(
-                grid, idx3Darr=tmp_idx, approach = None,
+                grid, idx3Darr=tmp_idx, approach = 'normal',
+                particle_mass_in_grams = particle_mass_g
             ).to('cm/s')
 
             ndens = grid[ndens_field][idx].to('cm**-3').ndview
