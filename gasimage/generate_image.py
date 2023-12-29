@@ -431,7 +431,7 @@ def generate_image(accum_strat, ray_collection, ds, *,
                     ray_list.get_selected_raystart_rayuvec(ray_idx)
                 yield grid_ind, ray_start_codeLen, ray_uvec
 
-        # create the worker        
+        # create the worker
         worker = Worker(ds_initializer = ds,
                         length_unit_name = length_unit_name,
                         cm_per_length_unit = float(length_unit_quan.to('cm').v),
@@ -529,9 +529,12 @@ def freq_from_v_channels(v_channels, line_props):
     return (rest_freq * (1 + v_channels/unyt.c_cgs)).to('Hz')
 
 # define the legacy interface for backwards compatability!
+# -> this interface mixes parameterizations of the actual raytracing with the
+#    parameterization of the radiative transfer
+# -> in the modern interface, these configurations are handled separately!
 def optically_thin_ppv(v_channels, ray_collection, ds,
                        ndens_HI_n1state = ('gas', 'H_p0_number_density'),
-                       *, doppler_parameter_b = None,
+                       *, doppler_parameter_b = 'normal',
                        use_cython_gen_spec = True,
                        force_general_consolidation = False,
                        rescale_length_factor = None, pool = None):

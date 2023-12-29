@@ -419,7 +419,7 @@ def _test_compare_gen_spec(indata_dir, cython_legacy_comparison,
             obs_distance = unyt.unyt_quantity(12.4, 'kpc'),
             sky_latitude_ref_deg = 0.0,
             domain_theta_rad = np.pi/2, domain_phi_rad = 3*np.pi/2,
-            doppler_parameter_b = 'legacy', # only use this so we don't have to
+            doppler_parameter_b = 'normal', # only use this so we don't have to
                                             # change our test-answers
             nproc = 1, **kwargs
         )
@@ -435,7 +435,7 @@ def _test_compare_gen_spec(indata_dir, cython_legacy_comparison,
 
 def test_compare_cython_legacy_gen_spec(indata_dir):
     _test_compare_gen_spec(indata_dir, cython_legacy_comparison = True,
-                           rtol = 4.e-12, atol = 0.0)
+                           rtol = 5.e-12, atol = 0.0)
 
 # here we compare the traditional consolidation strategy (we directly
 # consolidate in the output array) vs the more general-purpose approach

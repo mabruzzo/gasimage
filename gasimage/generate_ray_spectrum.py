@@ -250,10 +250,13 @@ def generate_ray_spectrum_legacy(grid, spatial_grid_props,
 
             if ((doppler_parameter_b is None) or
                 isinstance(doppler_parameter_b, str)):
-                # it might be more sensible to make doppler_parameter_b into a
-                # field
+                # currently, this function can only be used for the 21
+                # spin-flip transition
+                # -> consequently, we ALWAY specify that the particle mass is
+                #    that of a Hydrogen atom!
                 cur_doppler_parameter_b = _calc_doppler_parameter_b(
-                    grid, idx3Darr=tmp_idx, approach = doppler_parameter_b,
+                    grid, idx3Darr = tmp_idx, approach = doppler_parameter_b,
+                    particle_mass_in_grams = unyt.mh_cgs.v
                 ).to('cm/s')
             else:
                 cur_doppler_parameter_b = doppler_parameter_b.to('cm/s')
