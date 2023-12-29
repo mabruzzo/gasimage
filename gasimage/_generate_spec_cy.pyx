@@ -971,12 +971,21 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
     cdef double[::1] n2g1_div_n1g2 = _n2g1_div_n1g2
 
     # compute the line_profiles
-    _profiles = full_line_profile_evaluation(
-        obs_freq = obs_freq,
-        doppler_parameter_b = doppler_parameter_b,
-        rest_freq = line_props.freq_quantity,
-        velocity_offset = vLOS).ndview
-    cdef double[:,:] profiles = _profiles
+    #_profiles = full_line_profile_evaluation(
+    #    obs_freq = obs_freq,
+    #    doppler_parameter_b = doppler_parameter_b,
+    #    rest_freq = line_props.freq_quantity,
+    #    velocity_offset = vLOS).ndview
+    #cdef double[:,:] profiles = _profiles
+
+    obs_freq = obs_freq.to('Hz').ndview
+    cdef const double[::1] obs_freq_Hz = obs_freq
+
+    _velocities = vLOS.to('cm/s').ndview
+    cdef const double[::1] velocities = _velocities
+
+    doppler_parameter_b = doppler_parameter_b.to('cm/s').ndview
+    cdef const double[::1] my_doppler_parameter_b = doppler_parameter_b
 
     # up above we do some precalculations!
     #
@@ -1000,7 +1009,9 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
                                          (_C_CGS * _C_CGS))
 
     # temproray variables used within the loop:
-    cdef double alpha_center, stim_emission_correction, source_func_cgs
+    cdef LineProfileStruct prof
+    cdef double profile_val, alpha_center, stim_emission_correction
+    cdef double source_func_cgs
     cdef double* alpha_nu_cgs = <double*> PyMem_Malloc(sizeof(double) * nfreq)
 
     cdef Py_ssize_t num_segments = dz.size
@@ -1019,8 +1030,14 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
         stim_emission_correction = (1.0 - n2g1_div_n1g2[pos_i])
         alpha_center = (_H_CGS * rest_freq_Hz * ndens_1[pos_i] * B12_cgs *
                         stim_emission_correction) / (4*np.pi)
+
+        # construct the profile for the current gas-element
+        prof = prep_LineProfHelper(rest_freq_Hz, my_doppler_parameter_b[pos_i],
+                                   velocities[pos_i])
         for freq_i in range(nfreq):
-            alpha_nu_cgs[freq_i] = alpha_center * profiles[freq_i,pos_i]
+            profile_val = eval_line_profile(obs_freq_Hz[freq_i], rest_freq_Hz,
+                                            prof)
+            alpha_nu_cgs[freq_i] = alpha_center * profile_val
 
         source_func_cgs = (
             source_func_numerator / ((1.0/n2g1_div_n1g2[pos_i]) - 1.0)
