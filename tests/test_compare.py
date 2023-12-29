@@ -1,7 +1,10 @@
+import os.path
+import datetime
+
 import numpy as np
 import unyt
 import yt
-import os.path
+
 
 from gasimage._ray_intersections_cy import ray_box_intersections
 from gasimage.generate_image import freq_from_v_channels, generate_image
@@ -22,6 +25,8 @@ def ray_values_startend(ds, start_end_pairs, fields = [],
     # even if fields is empty, it always contains an entry call dl, which is
     # the length through a cell
 
+    max_level = np.amax(ds.index.grid_levels)
+
     if find_indices:
         grid_left_edge = ds.domain_left_edge.to('code_length').ndview
         cell_width = (
@@ -30,22 +35,60 @@ def ray_values_startend(ds, start_end_pairs, fields = [],
         grid_left_edge, cell_width = None, None
 
     for start,end in start_end_pairs:
-        total_length = np.linalg.norm(np.array(end) - np.array(start))
-        assert total_length > 0.0
-
         cur_fields = {}
-        ray = ds.ray(start, end)
-        #print(ray["t"], ray["dts"])
-        sorted_idx = np.argsort(ray["t"])
+        start, end = np.asanyarray(start), np.asanyarray(end)
+        total_length = np.linalg.norm(end - start)
+
+        num_matching_components = np.count_nonzero(start == end)
+        if (num_matching_components == 3) or (total_length == 0.0):
+            raise AssertionError("START AND END POINTS ARE COLOCATED")
+        elif False and (num_matching_components == 2):
+            if start[0] != end[0]:
+                cast_ax, plane_coord = 0, (start[1],start[2])
+            elif start[1] != end[1]:
+                cast_ax, plane_coord = 1, (start[2],start[0])
+            else:
+                cast_ax, plane_coord = 2, (start[0],start[1])
+            ray = ds.ortho_ray(axis = cast_ax, coords = plane_coord)
+
+            l,r = ds.domain_left_edge[cast_ax], ds.domain_right_edge[cast_ax]
+            if isinstance(l, unyt.unyt_array):
+                l = l.to('code_length').v
+            if isinstance(l, unyt.unyt_array):
+                r = r.to('code_length').v
+            assert l >= min(start[cast_ax], end[cast_ax])
+            assert r <= max(start[cast_ax], end[cast_ax])
+
+            if max_level != 0:
+                raise RuntimeError("Problems may arise with AMR")
+
+            pos_fields = ['x','y','z']
+            sorted_idx = np.argsort(ray[pos_fields[cast_ax]])
+            dl = ray[['dx','dy','dz'][cast_ax]]
+
+            #cur_fields
+            #raise RuntimeError(list(zip(ray['dx'],ray['dy'],ray['dz'])))
+        else:
+            ray = ds.ray(start, end)
+
+            pos_fields = [('index', ax) for ax in 'xyz'] 
+            sorted_idx = np.argsort(ray["t"])
+            dl = ray['dts'][sorted_idx] * total_length
+
+        if isinstance(dl, unyt.unyt_array):
+            if dl.units.is_dimensionless:
+                dl = dl.ndview
+            else:
+                dl = dl.to('code_length')
         for field in fields:
             cur_fields[field] = ray[field][sorted_idx]
-        cur_fields['dl'] = ray['dts'][sorted_idx] * total_length
+        cur_fields['dl'] = dl
 
         if find_indices:
             indices = np.empty(shape = (3, sorted_idx.size), dtype = int)
-            for i, ax in enumerate('xyz'):
+            for i, pos_field in enumerate(pos_fields):
                 left_offset = (
-                    ray['index', ax][sorted_idx].to('code_length').ndview -
+                    ray[pos_field][sorted_idx].to('code_length').ndview -
                     grid_left_edge[i] - 0.5 * cell_width[i])
                 indices[i,:] = np.trunc(
                     left_offset/cell_width[i] + 0.5).astype(int)
@@ -311,6 +354,7 @@ def _dumber_full_noscatter_rt(accum_strat, concrete_ray_list, ds):
                      fields = fields, find_indices = False)
     for i, ray_data in enumerate(itr):
         print(i)
+        t1 = datetime.datetime.now()
         uvec = _to_uvec(vec[i])
         vLOS = (uvec[0] * ray_data['gas','velocity_x'] +
                 uvec[1] * ray_data['gas','velocity_y'] +
@@ -339,6 +383,8 @@ def _dumber_full_noscatter_rt(accum_strat, concrete_ray_list, ds):
         )
         integrated_source[:,i] = tmp[0]
         integrated_tau[:,i] = tmp[1]
+        t2 = datetime.datetime.now()
+        print(t2 - t1)
 
     return {'integrated_source' : integrated_source,
             'total_tau' : integrated_tau}

@@ -3,6 +3,8 @@
 #    except for testing purposes.
 # -> for that reason, we've moved it here
 
+from datetime import datetime
+
 import numpy as np
 import unyt
 
@@ -85,6 +87,9 @@ def _generate_noscatter_spectrum(line_props, obs_freq, vLOS, ndens, kinetic_T,
         ``bkg_intensity*np.exp(-tau[:, -1]) + integrated_source``.
     """
 
+    t_list = []
+    last_t = datetime.now()
+
     kboltz_cgs = unyt.kboltz_cgs.v
     h_cgs = unyt.h_cgs.v
 
@@ -129,11 +134,17 @@ def _generate_noscatter_spectrum(line_props, obs_freq, vLOS, ndens, kinetic_T,
         ndens2_div_ndens1 = level_pop_arg.hi_div_lo
         n2g1_div_n1g2 = ndens2_div_ndens1 * g_1 /g_2
 
+    t_list.append(('Boltzmann-stuff', datetime.now() - last_t))
+    last_t = datetime.now()
+
     # compute the line_profiles
     profiles = line_profile(obs_freq = obs_freq,
                             doppler_parameter_b = doppler_parameter_b,
                             rest_freq = rest_freq,
                             velocity_offset = vLOS)
+
+    t_list.append(('profile calculation', datetime.now() - last_t))
+    last_t = datetime.now()
 
     # Using equations 1.78 and 1.79 of Rybicki and Lighman to get
     # - absorption coefficient (with units of cm**-1), including the correction
@@ -186,11 +197,21 @@ def _generate_noscatter_spectrum(line_props, obs_freq, vLOS, ndens, kinetic_T,
     # we use (the advantage of our approach is we can put all considerations of
     # LOS velocities into the calculation of the line profile)
 
+    t_list.append(('computing absorption & source', datetime.now() - last_t))
+    last_t = datetime.now()
+
     dz = dz.to('cm')
 
     tau, integrated_source = solve_noscatter_rt(source_function = source_func,
                                                 absorption_coef = alpha_nu,
                                                 dz = dz)
+    t_list.append(('integral', datetime.now() - last_t))
+
+    if False:
+        print("python integration profiling:")
+        for name, t in t_list:
+            print(f'->{name}: {t}')
+
     if return_debug:
         return integrated_source, tau[:,-1], (tau, source_func)
     else:
@@ -271,11 +292,11 @@ def solve_noscatter_rt(source_function, absorption_coef, dz):
 
     starting_tau = 0.0
     tau = np.empty(shape = (nfreq, dz.size + 1), dtype = 'f8')
-    for freq_ind in range(nfreq):
-        tau[freq_ind, 0] = starting_tau
-        tau[freq_ind, 1:] = starting_tau + np.cumsum(
-            (absorption_coef[freq_ind] * dz).to('dimensionless').ndview
-        )
+
+    tau[:, 0] = starting_tau
+    tau[:, 1:] = starting_tau + np.cumsum(
+        (absorption_coef * dz).to('dimensionless').ndview, axis = 1
+    )
 
     # we are effectively solving the following integral (dependence on
     # frequency is dropped to simplify notation)
@@ -303,15 +324,8 @@ def solve_noscatter_rt(source_function, absorption_coef, dz):
     # Putting this togeter, we find that:
     #    f = ∑_(i=0)^(N-1) S_i * ( exp(-𝜏_i) - exp(-𝜏_(i+1)) )
 
-    exp_neg_tau = np.exp(-tau)
-    integral_term = np.zeros(shape=(nfreq,), dtype = 'f8') * source_function.uq
-    for freq_i in range(nfreq):
-        running_sum = 0.0 * source_function.uq
-        for pos_i in range(dz.size):
-            running_sum += (
-                source_function[freq_i,pos_i] *
-                (exp_neg_tau[freq_i, pos_i] - exp_neg_tau[freq_i, pos_i+1])
-            )
-        integral_term[freq_i] = running_sum
+    # multiply diffs by -1 since it computes exp(-𝜏_(i+1)) - exp(-𝜏_i) 
+    diffs = -np.diff(np.exp(-tau), axis = 1)
+    integral_term = (source_function * diffs).sum(axis = 1)
 
     return tau, integral_term
