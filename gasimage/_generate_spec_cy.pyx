@@ -747,11 +747,11 @@ cdef IntegralStructNoScatterRT prep_IntegralStructNoScatterRT(
 # This function should be repeatedly called moving progressively further from
 # the observer
 cdef void update_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj,
-                                           const double[:] absorption_coef,
+                                           const double* absorption_coef,
                                            double source_function, double dz):
     # NOTE: its ok to pass obj by value since the only thing being updated are
     #       pointers pointer held by obj
-    # implicit assumption: absorption_coef.shape[0] == obj.nfreq
+    # implicit assumption: absorption_coef has obj.nfreq entries
 
     cdef Py_ssize_t freq_i
     cdef double diff, cur_segEnd_expNegTau
@@ -861,6 +861,7 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
 class NdensRatio:
     hi_div_lo: np.ndarray
 
+@cython.wraparound(False)
 def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
                                     kinetic_T, doppler_parameter_b, dz,
                                     level_pops_arg):
@@ -928,16 +929,14 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
         ``bkg_intensity*np.exp(-tau[:, -1]) + integrated_source``.
     """
 
-    ndens = ndens
-
-    rest_freq_Hz = line_props.freq_Hz
+    cdef double rest_freq_Hz = line_props.freq_Hz
 
     # consider 2 states: states 1 and 2.
     # - State2 is the upper level and State1 is the lower level
     # - B12 multiplied by average intensity gives the rate of absorption
     # - A21 gives the rate of spontaneous emission
 
-    B12_cgs = line_props.B_absorption_cgs
+    cdef double B12_cgs = line_props.B_absorption_cgs
 
     g_1, g_2 = float(line_props.g_lo), float(line_props.g_hi)
 
@@ -959,7 +958,7 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
         # n1/n2 = (g1/g2) * exp(restframe_energy_photon_cgs * beta_cgs)
         # n2/n1 = (g2/g1) * exp(-restframe_energy_photon_cgs * beta_cgs)
         # (n2*g1)/(n1*g2) = exp(-restframe_energy_photon_cgs * beta_cgs)
-        n2g1_div_n1g2 = np.exp(-1 * restframe_energy_photon_erg * beta_cgs)
+        _n2g1_div_n1g2 = np.exp(-1 * restframe_energy_photon_erg * beta_cgs)
 
     else:
         raise RuntimeError("UNTESTED")
@@ -967,21 +966,26 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
         # in this case, treat ndens as number density of lower state
         ndens_1 = ndens
         ndens2_div_ndens1 = level_pop_arg.hi_div_lo
-        n2g1_div_n1g2 = ndens2_div_ndens1 * g_1 /g_2
+        _n2g1_div_n1g2 = ndens2_div_ndens1 * g_1 /g_2
+
+    cdef double[::1] n2g1_div_n1g2 = _n2g1_div_n1g2
 
     # compute the line_profiles
-    profiles = full_line_profile_evaluation(
+    _profiles = full_line_profile_evaluation(
         obs_freq = obs_freq,
         doppler_parameter_b = doppler_parameter_b,
         rest_freq = line_props.freq_quantity,
-        velocity_offset = vLOS)
-
+        velocity_offset = vLOS).ndview
+    cdef double[:,:] profiles = _profiles
 
     # up above we do some precalculations!
     #
     # Down blow we actually perform the integral!
 
-    nfreq = obs_freq.shape[0]
+    cdef Py_ssize_t nfreq = obs_freq.shape[0]
+
+    # the following are output variables (they will be updated by functions
+    # operating upon accumulator)
     tau = np.empty(shape = (nfreq,), dtype = 'f8')
     integrated_source = np.zeros(shape=(nfreq,), dtype = 'f8')
 
@@ -989,13 +993,16 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
         prep_IntegralStructNoScatterRT(tau, integrated_source)
 
     if accumulator.nfreq < 1:
-        raise RuntimeError("SOMETHING WEMT WRONG")
+        raise RuntimeError("Something went wrong while initializing the "
+                           "accumulator!")
 
     cdef Py_ssize_t num_segments = dz.size
-
     cdef double rest_freq3 = rest_freq_Hz*rest_freq_Hz*rest_freq_Hz
 
-    cdef Py_ssize_t pos_i
+    # scratch space
+    cdef double* alpha_nu_cgs = <double*> PyMem_Malloc(sizeof(double) * nfreq)
+
+    cdef Py_ssize_t pos_i, freq_i
     for pos_i in range(num_segments):
 
         # Using equations 1.78 and 1.79 of Rybicki and Lighman to get
@@ -1005,10 +1012,11 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
         # - NOTE: there are some weird ambiguities in the frequency dependence
         #   in these equations. These are discussed below.
         stim_emission_correction = (1.0 - n2g1_div_n1g2[pos_i])
-        alpha_nu_cgs = (
-            _H_CGS * rest_freq_Hz * ndens_1[pos_i] * B12_cgs *
-            stim_emission_correction * profiles.ndview[:,pos_i]
-        ) / (4*np.pi)
+        for freq_i in range(nfreq):
+            alpha_nu_cgs[freq_i] = (
+                _H_CGS * rest_freq_Hz * ndens_1[pos_i] * B12_cgs *
+                stim_emission_correction * profiles[freq_i,pos_i]
+            ) / (4*np.pi)
 
         tmp = (1.0/n2g1_div_n1g2[pos_i]) - 1.0
         source_func_cgs = (2*_H_CGS * rest_freq3 / (_C_CGS * _C_CGS)) / tmp
@@ -1046,6 +1054,7 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
 
     # do some cleanup!
     clean_IntegralStructNoScatterRT(accumulator)
+    PyMem_Free(alpha_nu_cgs)
 
     # these output arrays were updated within accumulator!
     return integrated_source, tau
