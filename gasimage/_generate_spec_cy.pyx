@@ -863,7 +863,7 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
         dz = dz
     )
 
-    return integrated_source, tau[:,-1]
+    return integrated_source, tau
 
 cpdef solve_noscatter_rt(const double[::1] source_function,
                          const double[:,:] absorption_coef,
@@ -933,11 +933,11 @@ cpdef solve_noscatter_rt(const double[::1] source_function,
     cdef Py_ssize_t nfreq = absorption_coef.shape[0]
     cdef Py_ssize_t freq_i, pos_i
 
-    _tau = np.empty(shape = (nfreq, num_segments + 1), dtype = 'f8')
-    cdef double[:,::1] tau = _tau
+    #_tau = np.empty(shape = (nfreq, num_segments + 1), dtype = 'f8')
+    #cdef double[:,::1] tau = _tau
 
-    _integral_term = np.zeros(shape=(nfreq,), dtype = 'f8')
-    cdef double[::1] integral_term = _integral_term
+    #_integral_term = np.zeros(shape=(nfreq,), dtype = 'f8')
+    #cdef double[::1] integral_term = _integral_term
 
     # part 1: solve for tau
     #
@@ -945,11 +945,11 @@ cpdef solve_noscatter_rt(const double[::1] source_function,
     #
     # NOTE: higher indices of dz are also further from observer
 
-    for freq_i in range(nfreq):
-        tau[freq_i, 0] = 0.0
-        for pos_i in range(num_segments):
-            tau[freq_i, pos_i+1] = (tau[freq_i, pos_i] +
-                                    absorption_coef[freq_i,pos_i] * dz[pos_i])
+    #for freq_i in range(nfreq):
+    #    tau[freq_i, 0] = 0.0
+    #    for pos_i in range(num_segments):
+    #        tau[freq_i, pos_i+1] = (tau[freq_i, pos_i] +
+    #                                absorption_coef[freq_i,pos_i] * dz[pos_i])
 
     # we are effectively solving the following integral (dependence on
     # frequency is dropped to simplify notation)
@@ -977,25 +977,26 @@ cpdef solve_noscatter_rt(const double[::1] source_function,
     # Putting this togeter, we find that:
     #    f = ∑_(i=0)^(N-1) S_i * ( exp(-𝜏_i) - exp(-𝜏_(i+1)) )
 
-    cdef double segStart_expNegTau 
-    cdef double segEnd_expNegTau
 
-    cdef double integrated_source, diff
+    integral_term = np.zeros(shape=(nfreq,), dtype = 'f8')
 
+    tau = np.empty(shape = (nfreq,), dtype = 'f8')
     for freq_i in range(nfreq):
-        integrated_source = 0.0
+        tau[freq_i] = 0.0
 
-        # iterate over the segments of the ray
-        segStart_expNegTau = exp_f64(-tau[freq_i, 0]) # should evaluate to 1
-        for pos_i in range(num_segments):
-            segEnd_expNegTau = exp_f64(-tau[freq_i, pos_i+1])
-            diff = segStart_expNegTau - segEnd_expNegTau
-            integrated_source += (source_function[pos_i] * diff)
+    # iterate over the segments of the ray
+    segStart_expNegTau = np.exp(-tau) # should evaluate to 1
+    for pos_i in range(num_segments):
+        integrated_source = 0.0    
+        # update tau so it holds the value at the end of the current segment
+        for freq_i in range(nfreq):
+            tau[freq_i] = (tau[freq_i] +
+                           absorption_coef[freq_i,pos_i] * dz[pos_i])
+        segEnd_expNegTau = np.exp(-tau)
+        diff = segStart_expNegTau - segEnd_expNegTau
+        integral_term += (source_function[pos_i] * diff)
 
-            # prepare for next segment
-            segStart_expNegTau = segEnd_expNegTau
+        # prepare for next segment
+        segStart_expNegTau = segEnd_expNegTau
 
-        # record the integrated quantity
-        integral_term[freq_i] = integrated_source
-
-    return _tau, _integral_term
+    return tau, integral_term
