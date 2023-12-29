@@ -976,48 +976,12 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
         rest_freq = line_props.freq_quantity,
         velocity_offset = vLOS)
 
-    # Using equations 1.78 and 1.79 of Rybicki and Lighman to get
-    # - absorption coefficient (with units of cm**-1), including the correction
-    #   for stimulated-emission
-    # - the source function
-    # - NOTE: there are some weird ambiguities in the frequency dependence in
-    #   these equations. These are discussed below.
-    stim_emission_correction = (1.0 - n2g1_div_n1g2)
-    alpha_nu_cgs = (_H_CGS * rest_freq_Hz * ndens_1 * B12_cgs *
-                    stim_emission_correction * profiles.ndview) / (4*np.pi)
 
-    rest_freq3= rest_freq_Hz*rest_freq_Hz*rest_freq_Hz
-    tmp = (1.0/n2g1_div_n1g2) - 1.0
-    source_func_cgs = (2*_H_CGS * rest_freq3 / (_C_CGS * _C_CGS)) / tmp
+    # up above we do some precalculations!
+    #
+    # Down blow we actually perform the integral!
 
-    # FREQUENCY AMBIGUITIES:
-    # - in Rybicki and Lighman, the notation used in equations 1.78 and 1.79
-    #   suggest that all frequencies used in computing linear_absorption and
-    #   source_function should use the observed frequency (in the
-    #   reference-frame where gas-parcel has no bulk motion)
-    # - currently, we use the line's central rest-frame frequency everywhere
-    #   other than in the calculation of the line profile.
-    #
-    # In the absorption-coefficient, I think our choice is well-motivated!
-    # -> if you look back at the derivation the equation 1.74, it looks seems
-    #    that the leftmost frequency should be the rest_freq (it seems like
-    #    they dropped this along the way and carried it through to 1.78)
-    # -> in the LTE case, they don't use rest-freq in the correction for
-    #    stimulated emission (eqn 1.80). I think what we do in the LTE case is
-    #    more correct.
-    #
-    # Overall, I suspect the reason that Rybicki & Lightman play a little fast
-    # and loose with frequency dependence is the sort of fuzzy assumptions made
-    # when deriving the Einstein relations. (It also helps them arive at result
-    # that source-function is a black-body in LTE)
-    #
-    # At the end of the day, it probably doesn't matter much which frequencies
-    # we use (the advantage of our approach is we can put all considerations of
-    # LOS velocities into the calculation of the line profile)
-
-    # up above we precomputed all of the values need in the integral. Here, we
-    # actually do the integral
-    nfreq = alpha_nu_cgs.shape[0]
+    nfreq = obs_freq.shape[0]
     tau = np.empty(shape = (nfreq,), dtype = 'f8')
     integrated_source = np.zeros(shape=(nfreq,), dtype = 'f8')
 
@@ -1029,11 +993,59 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
 
     cdef Py_ssize_t num_segments = dz.size
 
+    cdef double rest_freq3 = rest_freq_Hz*rest_freq_Hz*rest_freq_Hz
+
     cdef Py_ssize_t pos_i
     for pos_i in range(num_segments):
-        update_IntegralStructNoScatterRT(accumulator, alpha_nu_cgs[:,pos_i],
-                                         source_func_cgs[pos_i], dz[pos_i])
 
+        # Using equations 1.78 and 1.79 of Rybicki and Lighman to get
+        # - absorption coefficient (with units of cm**-1), including the
+        #   correction for stimulated-emission
+        # - the source function
+        # - NOTE: there are some weird ambiguities in the frequency dependence
+        #   in these equations. These are discussed below.
+        stim_emission_correction = (1.0 - n2g1_div_n1g2[pos_i])
+        alpha_nu_cgs = (
+            _H_CGS * rest_freq_Hz * ndens_1[pos_i] * B12_cgs *
+            stim_emission_correction * profiles.ndview[:,pos_i]
+        ) / (4*np.pi)
+
+        tmp = (1.0/n2g1_div_n1g2[pos_i]) - 1.0
+        source_func_cgs = (2*_H_CGS * rest_freq3 / (_C_CGS * _C_CGS)) / tmp
+
+        # FREQUENCY AMBIGUITIES:
+        # - in Rybicki and Lighman, the notation used in equations 1.78 and 1.79
+        #   suggest that all frequencies used in computing linear_absorption and
+        #   source_function should use the observed frequency (in the
+        #   reference-frame where gas-parcel has no bulk motion)
+        # - currently, we use the line's central rest-frame frequency everywhere
+        #   other than in the calculation of the line profile.
+        #
+        # In the absorption-coefficient, I think our choice is well-motivated!
+        # -> if you look back at the derivation the equation 1.74, it seems
+        #    that the leftmost frequency should be the rest_freq (it seems like
+        #    they dropped this along the way and carried it through to 1.78)
+        # -> in the LTE case, they don't use rest-freq in the correction for
+        #    stimulated emission (eqn 1.80). I think what we do in the LTE case
+        #    is more correct.
+        #
+        # Overall, I suspect the reason that Rybicki & Lightman play a little
+        # fast and loose with frequency dependence is the sort of fuzzy
+        # assumptions made when deriving the Einstein relations. (It also helps
+        # them arive at result that source-function is a black-body in LTE)
+        #
+        # At the end of the day, it probably doesn't matter much which
+        # frequencies we use (the advantage of our approach is we can put all
+        # considerations of LOS velocities into the calculation of the line
+        # profile)
+
+        # now that we know the source-function and the absorption coefficient,
+        # let's compute the integral(s) for the current section of the array
+        update_IntegralStructNoScatterRT(accumulator, alpha_nu_cgs,
+                                         source_func_cgs, dz[pos_i])
+
+    # do some cleanup!
     clean_IntegralStructNoScatterRT(accumulator)
 
+    # these output arrays were updated within accumulator!
     return integrated_source, tau
