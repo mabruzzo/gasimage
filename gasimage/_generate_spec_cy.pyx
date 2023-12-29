@@ -788,32 +788,6 @@ cdef void clean_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj):
         PyMem_Free(obj.segStart_expNegTau)
 
 
-cpdef solve_noscatter_rt(const double[::1] source_function,
-                         const double[:,:] absorption_coef,
-                         const double[::1] dz):
-
-    nfreq = absorption_coef.shape[0]
-    _tau = np.empty(shape = (nfreq,), dtype = 'f8')
-    _integral_term = np.zeros(shape=(nfreq,), dtype = 'f8')
-
-    cdef IntegralStructNoScatterRT accumulator = \
-        prep_IntegralStructNoScatterRT(_tau, _integral_term)
-
-    if accumulator.nfreq < 1:
-        raise RuntimeError("SOMETHING WEMT WRONG")
-
-    cdef Py_ssize_t num_segments = dz.size
-
-    cdef Py_ssize_t pos_i
-    for pos_i in range(num_segments):
-        update_IntegralStructNoScatterRT(accumulator, absorption_coef[:,pos_i],
-                                         source_function[pos_i], dz[pos_i])
-
-    clean_IntegralStructNoScatterRT(accumulator)
-
-    return _tau, _integral_term
-
-
 def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
                                     full_ray_start, full_ray_uvec,
                                     obs_freq, line_props, partition_func,
@@ -1041,10 +1015,25 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
     # we use (the advantage of our approach is we can put all considerations of
     # LOS velocities into the calculation of the line profile)
 
-    tau, integrated_source = solve_noscatter_rt(
-        source_function = source_func_cgs,
-        absorption_coef = alpha_nu_cgs,
-        dz = dz
-    )
+    # up above we precomputed all of the values need in the integral. Here, we
+    # actually do the integral
+    nfreq = alpha_nu_cgs.shape[0]
+    tau = np.empty(shape = (nfreq,), dtype = 'f8')
+    integrated_source = np.zeros(shape=(nfreq,), dtype = 'f8')
+
+    cdef IntegralStructNoScatterRT accumulator = \
+        prep_IntegralStructNoScatterRT(tau, integrated_source)
+
+    if accumulator.nfreq < 1:
+        raise RuntimeError("SOMETHING WEMT WRONG")
+
+    cdef Py_ssize_t num_segments = dz.size
+
+    cdef Py_ssize_t pos_i
+    for pos_i in range(num_segments):
+        update_IntegralStructNoScatterRT(accumulator, alpha_nu_cgs[:,pos_i],
+                                         source_func_cgs[pos_i], dz[pos_i])
+
+    clean_IntegralStructNoScatterRT(accumulator)
 
     return integrated_source, tau
