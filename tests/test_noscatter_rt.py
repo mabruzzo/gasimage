@@ -1,9 +1,14 @@
 import numpy as np
+import pytest
 import unyt
 
-from gasimage.generate_ray_spectrum import blackbody_intensity_cgs
-import pytest
+from py_generate_noscatter_spectrum import blackbody_intensity_cgs
 
+# TODO: consolidate this function with the version in
+#  -> py_generate_noscatter_spectrum.solve_noscatter_rt
+# I think that we can just make use of that alternative version - the main
+# difference is that this version accepts bkg_intensity as an argument. But,
+# I don't think we ever actually use it!
 def solve_rt(source_function, absorption_coef, dz, bkg_intensity):
     """
     Solve the full equation of radiative transfer.

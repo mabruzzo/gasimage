@@ -6,17 +6,20 @@ import unyt
 from gasimage import default_spin_flip_props
 from gasimage.generate_ray_spectrum import (
     _generate_ray_spectrum_py,
-    line_profile,
-    _generate_noscatter_spectrum,
-    blackbody_intensity_cgs
+    line_profile
 )
 from gasimage._generate_spec_cy import (
     full_line_profile_evaluation, _generate_ray_spectrum_cy,
     _generate_noscatter_spectrum_cy
 )
-
 from gasimage.rt_config import (
     builtin_halpha_props, crude_H_partition_func
+)
+
+
+from py_generate_noscatter_spectrum import (
+    _generate_noscatter_spectrum,
+    blackbody_intensity_cgs
 )
 
 

@@ -8,11 +8,12 @@ from gasimage.generate_image import freq_from_v_channels, generate_image
 
 from gasimage.accumulators import NoScatterRTAccumStrat
 from gasimage.rt_config import builtin_halpha_props, crude_H_partition_func
-from gasimage.generate_ray_spectrum import \
-    _generate_noscatter_spectrum as py_generate_noscatter_spectrum
 from gasimage.ray_collection import ConcreteRayList
 from gasimage.utils.testing import assert_allclose_units
 
+from py_generate_noscatter_spectrum import (
+    _generate_noscatter_spectrum as py_generate_noscatter_spectrum
+)
 from test_full import _dummy_create_field_callback
 
 def ray_values_startend(ds, start_end_pairs, fields = [],
