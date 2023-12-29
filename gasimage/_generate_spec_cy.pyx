@@ -866,11 +866,39 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
 class NdensRatio:
     hi_div_lo: np.ndarray
 
+
+cdef void ndens_and_ratio_from_partition(double[::1] ndens_1,
+                                         double[::1] n2g1_div_n1g2,
+                                         const double[::1] inv_partition_vals,
+                                         const double[::1] kinetic_T,
+                                         const double[::1] ndens_ion_species,
+                                         const double g_1,
+                                         const double energy_1_erg,
+                                         const double rest_freq_Hz,
+                                         const Py_ssize_t num_segments):
+    cdef double restframe_energy_photon_erg = rest_freq_Hz * _H_CGS
+    cdef double beta_cgs
+    for pos_i in range(num_segments):
+        # thermodynamic beta
+        beta_cgs = 1.0 / (kinetic_T[pos_i] * _KBOLTZ_CGS)
+
+        ndens_1[pos_i] = (
+            ndens_ion_species[pos_i] * g_1 * exp_f64(-energy_1_erg * beta_cgs)
+            * inv_partition_vals[pos_i]
+        )
+
+        # n1/n2 = (g1/g2) * exp(restframe_energy_photon_cgs * beta_cgs)
+        # n2/n1 = (g2/g1) * exp(-restframe_energy_photon_cgs * beta_cgs)
+        # (n2*g1)/(n1*g2) = exp(-restframe_energy_photon_cgs * beta_cgs)
+        n2g1_div_n1g2[pos_i] = exp_f64(-1 * restframe_energy_photon_erg *
+                                       beta_cgs)
+
+
 @cython.wraparound(False)
 def _generate_noscatter_spectrum_cy(object line_props,
                                     const double[::1] obs_freq,
                                     const double[::1] vLOS,
-                                    object ndens,
+                                    const double[::1] ndens,
                                     object kinetic_T,
                                     const double[::1] doppler_parameter_b,
                                     const double[::1] dz,
@@ -938,51 +966,49 @@ def _generate_noscatter_spectrum_cy(object line_props,
         theat varies with frequency), then the total intensity is just
         ``bkg_intensity*np.exp(-tau[:, -1]) + integrated_source``.
     """
+    cdef Py_ssize_t num_segments = dz.size
+    cdef Py_ssize_t pos_i, freq_i # indexing variables
 
+    # load transition properties:
     cdef double rest_freq_Hz = line_props.freq_Hz
 
     # consider 2 states: states 1 and 2.
     # - State2 is the upper level and State1 is the lower level
     # - B12 multiplied by average intensity gives the rate of absorption
     # - A21 gives the rate of spontaneous emission
-
     cdef double B12_cgs = line_props.B_absorption_cgs
+    cdef double g_1 = float(line_props.g_lo)
+    cdef double g_2 = float(line_props.g_hi)
 
-    g_1, g_2 = float(line_props.g_lo), float(line_props.g_hi)
-
-    energy_1_erg = line_props.energy_lo_erg
-    restframe_energy_photon_erg = rest_freq_Hz * _H_CGS
-
-    if callable(level_pops_arg):
-        # assume LTE
-        ndens_ion_species = ndens
-        partition_func = level_pops_arg
-        # thermodynamic beta
-        beta_cgs = 1.0 / (kinetic_T * _KBOLTZ_CGS)
-
-        # in this case, treat ndens as number density of particles described by
-        # partition function
-        ndens_1 = (ndens_ion_species * g_1 * np.exp(-energy_1_erg * beta_cgs)
-                   / partition_func(kinetic_T))
-
-        # n1/n2 = (g1/g2) * exp(restframe_energy_photon_cgs * beta_cgs)
-        # n2/n1 = (g2/g1) * exp(-restframe_energy_photon_cgs * beta_cgs)
-        # (n2*g1)/(n1*g2) = exp(-restframe_energy_photon_cgs * beta_cgs)
-        _n2g1_div_n1g2 = np.exp(-1 * restframe_energy_photon_erg * beta_cgs)
-
-    else:
-        raise RuntimeError("UNTESTED")
-        assert isinstance(level_pops_arg, NdensRatio)
-        # in this case, treat ndens as number density of lower state
-        ndens_1 = ndens
-        ndens2_div_ndens1 = level_pop_arg.hi_div_lo
-        _n2g1_div_n1g2 = ndens2_div_ndens1 * g_1 /g_2
-
+    # allocate & precompute both ndens_1 & n2g1_div_n1g2
+    _ndens_1 = np.empty(shape = (num_segments,), dtype = 'f8')
+    cdef double[::1] ndens_1 = _ndens_1
+    _n2g1_div_n1g2 = np.empty(shape = (num_segments,), dtype = 'f8')
     cdef double[::1] n2g1_div_n1g2 = _n2g1_div_n1g2
 
-    # up above we do some precalculations!
-    #
+    if callable(level_pops_arg):
+        # in this case:
+        # -> treat level_pops_arg as partition function
+        # -> treat ndens as number density of particles described by partition
+        #    function
+        # -> assume LTE
+        inv_partition_func_vals = 1.0 / level_pops_arg(kinetic_T)
+
+        ndens_and_ratio_from_partition(
+            ndens_1 = ndens_1, n2g1_div_n1g2 = n2g1_div_n1g2,
+            inv_partition_vals = inv_partition_func_vals,
+            kinetic_T = kinetic_T, ndens_ion_species = ndens,
+            g_1 = g_1, energy_1_erg = line_props.energy_lo_erg,
+            rest_freq_Hz = rest_freq_Hz, num_segments = num_segments)
+    elif isinstance(level_pops_arg, NdensRatio):
+        raise RuntimeError("UNTESTED")
+        _ndens_1[:] = ndens # in this case, treat ndens as lower-state ndens
+        _n2g1_div_n1g2[:] = level_pop_arg.hi_div_lo * g_1 / g_2
+    else:
+        raise ValueError("unallowed level_pops_arg")
+
     # Down blow we actually perform the integral!
+    cdef const double[:] kinetic_T_view = kinetic_T
 
     cdef Py_ssize_t nfreq = obs_freq.shape[0]
 
@@ -1007,8 +1033,6 @@ def _generate_noscatter_spectrum_cy(object line_props,
     cdef double source_func_cgs
     cdef double* alpha_nu_cgs = <double*> PyMem_Malloc(sizeof(double) * nfreq)
 
-    cdef Py_ssize_t num_segments = dz.size
-    cdef Py_ssize_t pos_i, freq_i # indexing variables
     for pos_i in range(num_segments):
 
         # Using equations 1.78 and 1.79 of Rybicki and Lighman to get
