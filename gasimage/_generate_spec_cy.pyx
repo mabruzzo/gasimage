@@ -866,7 +866,9 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
 class NdensRatio:
     hi_div_lo: np.ndarray
 
-
+@cython.wraparound(False)
+@cython.boundscheck(False)
+@cython.cdivision(True)
 cdef void ndens_and_ratio_from_partition(double[::1] ndens_1,
                                          double[::1] n2g1_div_n1g2,
                                          const double[::1] inv_partition_vals,
@@ -893,8 +895,24 @@ cdef void ndens_and_ratio_from_partition(double[::1] ndens_1,
         n2g1_div_n1g2[pos_i] = exp_f64(-1 * restframe_energy_photon_erg *
                                        beta_cgs)
 
+# further optimization ideas:
+# 1. don't allow level_pops_arg to be an arbitrary python object
+#    (i.e. implement the partition function interpolation in C/C++)
+#    -> this would allow us to make use of fused types
+#       -> this would further allow us to entirely avoid allocating 2 arrays
+#          to hold precomputed values
+#    -> we could also then declare kinetic_T as a memoryview
+#
+# 2. modify update_IntegralStructNoScatterRT so that it operates on individual
+#    frequencies (either by making the method operate on individual frequencies
+#    or by allocating separate IntegralStructNoScatterRT for each freq)
+#
+# 3. Modify the doppler-parameter calculation to happen on the fly (since we
+#    are already passing in the kinetic temperature anyways)
 
 @cython.wraparound(False)
+@cython.boundscheck(False)
+@cython.cdivision(True)
 def _generate_noscatter_spectrum_cy(object line_props,
                                     const double[::1] obs_freq,
                                     const double[::1] vLOS,
@@ -1007,8 +1025,7 @@ def _generate_noscatter_spectrum_cy(object line_props,
     else:
         raise ValueError("unallowed level_pops_arg")
 
-    # Down blow we actually perform the integral!
-    cdef const double[:] kinetic_T_view = kinetic_T
+    # Down below we actually perform the integral!
 
     cdef Py_ssize_t nfreq = obs_freq.shape[0]
 

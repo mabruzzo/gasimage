@@ -17,9 +17,13 @@ class build_ext(_build_ext):
 
 ext_modules = [
     Extension('gasimage._ray_intersections_cy',
-              ['gasimage/_ray_intersections_cy.pyx']),
+              ['gasimage/_ray_intersections_cy.pyx'],
+              define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+    ),
     Extension('gasimage._generate_spec_cy',
-              ['gasimage/_generate_spec_cy.pyx']),
+              ['gasimage/_generate_spec_cy.pyx'],
+              define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+    ),
     #Extension('gasimage.utilts._ArrayDict_cy',
     #          ['gasimage/utils/_ArrayDict_cy.pyx']),
 ]
