@@ -929,28 +929,6 @@ cpdef solve_noscatter_rt(const double[::1] source_function,
 
     """
 
-    cdef Py_ssize_t num_segments = dz.size
-    cdef Py_ssize_t nfreq = absorption_coef.shape[0]
-    cdef Py_ssize_t freq_i, pos_i
-
-    #_tau = np.empty(shape = (nfreq, num_segments + 1), dtype = 'f8')
-    #cdef double[:,::1] tau = _tau
-
-    #_integral_term = np.zeros(shape=(nfreq,), dtype = 'f8')
-    #cdef double[::1] integral_term = _integral_term
-
-    # part 1: solve for tau
-    #
-    # we defined tau so that it is increasing as we move away from the observer
-    #
-    # NOTE: higher indices of dz are also further from observer
-
-    #for freq_i in range(nfreq):
-    #    tau[freq_i, 0] = 0.0
-    #    for pos_i in range(num_segments):
-    #        tau[freq_i, pos_i+1] = (tau[freq_i, pos_i] +
-    #                                absorption_coef[freq_i,pos_i] * dz[pos_i])
-
     # we are effectively solving the following integral (dependence on
     # frequency is dropped to simplify notation)
     #     f = -∫ S(𝜏) * exp(-𝜏) d𝜏 integrated from 𝜏 to 0
@@ -977,40 +955,53 @@ cpdef solve_noscatter_rt(const double[::1] source_function,
     # Putting this togeter, we find that:
     #    f = ∑_(i=0)^(N-1) S_i * ( exp(-𝜏_i) - exp(-𝜏_(i+1)) )
 
+    cdef Py_ssize_t num_segments = dz.size
+    cdef Py_ssize_t nfreq = absorption_coef.shape[0]
+
+    cdef Py_ssize_t freq_i, pos_i # indexing variables
+
+    # allocate scratch space
     cdef double* segStart_expNegTau = <double*> PyMem_Malloc(
         sizeof(double) * nfreq)
-    cdef double* segEnd_expNegTau = <double*> PyMem_Malloc(
-        sizeof(double) * nfreq)
-    cdef double* tmp_ptr = NULL
 
-    integral_term = np.zeros(shape=(nfreq,), dtype = 'f8')
-
+    # allocate output variable
+    _integral_term = np.zeros(shape=(nfreq,), dtype = 'f8')
+    cdef double[::1] integral_term = _integral_term
     _tau = np.empty(shape = (nfreq,), dtype = 'f8')
     cdef double[::1] tau = _tau
+
+    # initialize the variables so that they have the correct values for the
+    # starting segment of the for
     for freq_i in range(nfreq):
         # at the end of the ray, closest to the observer
         # -> tau = 0.0 & exp(-tau) = 1.0
         tau[freq_i] = 0.0
         segStart_expNegTau[freq_i] = 1.0
 
+    cdef double diff, cur_segEnd_expNegTau # variables used inside for-loop
+
     for pos_i in range(num_segments):
         for freq_i in range(nfreq):
-            # update tau so it holds the value at the end of the current segment
-            tau[freq_i] = (tau[freq_i] +
-                           absorption_coef[freq_i,pos_i] * dz[pos_i])
-            # compute the value exp(-tau) at the end of the current segment
-            segEnd_expNegTau[freq_i] = exp_f64(-_tau[freq_i])
+            # part 1: update tau[freq_i] so that it holds the optical-depth at
+            #         the end of the current segment
+            # -> we defined tau so that it is increasing as we move away from
+            #    the observer
+            # -> higher indices of dz are further from observer
+            tau[freq_i] += absorption_coef[freq_i,pos_i] * dz[pos_i]
+
+            # part 2: perform the integral over the current segment
+
+            # compute the value of exp(-tau) at the end of the current segment
+            cur_segEnd_expNegTau = exp_f64(-_tau[freq_i])
 
             # now update the integrated source term
-            diff = segStart_expNegTau[freq_i] - segEnd_expNegTau[freq_i]
+            diff = segStart_expNegTau[freq_i] - cur_segEnd_expNegTau
             integral_term[freq_i] += (source_function[pos_i] * diff)
 
-        # prepare for next segment (swap segStart_expNegTau & segEnd_expNegTau)
-        tmp_ptr = segStart_expNegTau
-        segStart_expNegTau = segEnd_expNegTau
-        segEnd_expNegTau = tmp_ptr
+            # prepare for next segment (the value of expNegTau at the end of
+            # the current segment is the value at the start of the next segment)
+            segStart_expNegTau[freq_i] = cur_segEnd_expNegTau
 
     PyMem_Free(segStart_expNegTau)
-    PyMem_Free(segEnd_expNegTau)
 
-    return _tau, integral_term
+    return _tau, _integral_term
