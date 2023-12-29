@@ -6,7 +6,7 @@ cimport cython
 
 from libc.math cimport exp as exp_f64
 from libc.math cimport sqrt as sqrt_f64
-from libc.stdlib cimport malloc, free
+from cpython.mem cimport PyMem_Malloc, PyMem_Free
 
 # TODO: use the following instead of DEF
 #cdef extern from *:
@@ -977,26 +977,40 @@ cpdef solve_noscatter_rt(const double[::1] source_function,
     # Putting this togeter, we find that:
     #    f = ∑_(i=0)^(N-1) S_i * ( exp(-𝜏_i) - exp(-𝜏_(i+1)) )
 
+    cdef double* segStart_expNegTau = <double*> PyMem_Malloc(
+        sizeof(double) * nfreq)
+    cdef double* segEnd_expNegTau = <double*> PyMem_Malloc(
+        sizeof(double) * nfreq)
+    cdef double* tmp_ptr = NULL
 
     integral_term = np.zeros(shape=(nfreq,), dtype = 'f8')
 
-    tau = np.empty(shape = (nfreq,), dtype = 'f8')
+    _tau = np.empty(shape = (nfreq,), dtype = 'f8')
+    cdef double[::1] tau = _tau
     for freq_i in range(nfreq):
+        # at the end of the ray, closest to the observer
+        # -> tau = 0.0 & exp(-tau) = 1.0
         tau[freq_i] = 0.0
+        segStart_expNegTau[freq_i] = 1.0
 
-    # iterate over the segments of the ray
-    segStart_expNegTau = np.exp(-tau) # should evaluate to 1
     for pos_i in range(num_segments):
-        integrated_source = 0.0    
-        # update tau so it holds the value at the end of the current segment
         for freq_i in range(nfreq):
+            # update tau so it holds the value at the end of the current segment
             tau[freq_i] = (tau[freq_i] +
                            absorption_coef[freq_i,pos_i] * dz[pos_i])
-        segEnd_expNegTau = np.exp(-tau)
-        diff = segStart_expNegTau - segEnd_expNegTau
-        integral_term += (source_function[pos_i] * diff)
+            # compute the value exp(-tau) at the end of the current segment
+            segEnd_expNegTau[freq_i] = exp_f64(-_tau[freq_i])
 
-        # prepare for next segment
+            # now update the integrated source term
+            diff = segStart_expNegTau[freq_i] - segEnd_expNegTau[freq_i]
+            integral_term[freq_i] += (source_function[pos_i] * diff)
+
+        # prepare for next segment (swap segStart_expNegTau & segEnd_expNegTau)
+        tmp_ptr = segStart_expNegTau
         segStart_expNegTau = segEnd_expNegTau
+        segEnd_expNegTau = tmp_ptr
 
-    return tau, integral_term
+    PyMem_Free(segStart_expNegTau)
+    PyMem_Free(segEnd_expNegTau)
+
+    return _tau, integral_term
