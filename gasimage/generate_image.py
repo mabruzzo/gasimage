@@ -134,6 +134,41 @@ def _top_level_grid_indices(ds):
     block_loc_array[tuple(block_array_indices.T)] = np.arange(n_blocks)
     return block_loc_array
 
+def itr_traverse_top_level_grids(ds, ray_list, units,
+                                 rescale_length_factor = 1.0):
+    subgrid_array = _top_level_grid_indices(ds)
+    domain_left_edge = (
+        ds.domain_left_edge.to(units).v * rescale_length_factor
+    )
+    domain_right_edge = (
+        ds.domain_right_edge.to(units).v * rescale_length_factor
+    )
+    cell_width = ((domain_right_edge - domain_left_edge)/
+                  np.array(subgrid_array.shape))
+    subgrid_array_shape = subgrid_array.shape
+
+    ray_uvec_l = ray_list.get_ray_uvec()
+
+    for ray_ind in range(len(ray_list)):
+        ray_start = ray_list.ray_start_codeLen[ray_ind,:]
+        ray_uvec = ray_uvec_l[ray_ind,:]
+
+        intersect_dist = ray_box_intersections(
+            line_start = ray_start, line_uvec = ray_uvec, 
+            left_edge = domain_left_edge, right_edge = domain_right_edge)
+
+        if len(intersect_dist) < 2:
+            subgrid_sequence,dists = np.array([]),np.array([])
+        else:
+            idx,dists = traverse_grid(line_uvec = ray_uvec,
+                                      line_start = ray_start,
+                                      grid_left_edge = domain_left_edge,
+                                      cell_width = cell_width,
+                                      grid_shape = subgrid_array_shape)
+            subgrid_sequence = subgrid_array[idx[0],idx[1],idx[2]]
+
+        yield subgrid_sequence, dists
+
 class RayGridAssignments:
     # for the sake of clarity, let's list & annotate the instance variables of
     # this class (These are not class variables!)
@@ -157,53 +192,30 @@ class RayGridAssignments:
 
     def __init__(self, ds, ray_list, units,
                  rescale_length_factor = 1.0):
-        subgrid_array = _top_level_grid_indices(ds)
-        domain_left_edge = (
-            ds.domain_left_edge.to(units).v * rescale_length_factor
-        )
-        domain_right_edge = (
-            ds.domain_right_edge.to(units).v * rescale_length_factor
-        )
-        cell_width = ((domain_right_edge - domain_left_edge)/
-                      np.array(subgrid_array.shape))
-        subgrid_array_shape = subgrid_array.shape
-
         self._sequence_table = {}
-
         self._subgrids_with_rays = set()
+        self._num_intersected_subgrids = [0 for i in range(len(ray_list))]
 
-        length = len(ray_list)
-        self._num_intersected_subgrids = [0 for i in range(length)]
+        itr = itr_traverse_top_level_grids(
+            ds = ds, ray_list = ray_list, units = units,
+            rescale_length_factor = rescale_length_factor)
 
-        ray_uvec_l = ray_list.get_ray_uvec()
-
-        for i in range(length):
-            ray_start = ray_list.ray_start_codeLen[i,:]
-            ray_uvec = ray_uvec_l[i,:]
-
-            intersect_dist = ray_box_intersections(
-                line_start = ray_start, line_uvec = ray_uvec, 
-                left_edge = domain_left_edge, right_edge = domain_right_edge)
-            if len(intersect_dist) < 2:
+        for ray_ind, (subgrid_sequence, _) in enumerate(itr):
+            if np.size(subgrid_sequence) == 0:
                 continue
-            idx,_ = traverse_grid(line_uvec = ray_uvec,
-                                  line_start = ray_start,
-                                  grid_left_edge = domain_left_edge,
-                                  cell_width = cell_width,
-                                  grid_shape = subgrid_array_shape)
-            subgrid_sequence = tuple(subgrid_array[idx[0],idx[1],idx[2]])
+
+            subgrid_sequence = tuple(subgrid_sequence)
 
             # record that the current ray is associated with subgrid_sequence
-
             self._subgrids_with_rays.update(subgrid_sequence)
 
             if subgrid_sequence in self._sequence_table:
-                self._sequence_table[subgrid_sequence].append(i)
+                self._sequence_table[subgrid_sequence].append(ray_ind)
             else:
-                self._sequence_table[subgrid_sequence] = [i]
+                self._sequence_table[subgrid_sequence] = [ray_ind]
 
             # record the number of intersected subgrids
-            self._num_intersected_subgrids[i] = len(subgrid_sequence)
+            self._num_intersected_subgrids[ray_ind] = len(subgrid_sequence)
 
     def num_subgrid_intersections(self):
         return self._num_intersected_subgrids
