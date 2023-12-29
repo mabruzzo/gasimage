@@ -993,16 +993,18 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
         prep_IntegralStructNoScatterRT(tau, integrated_source)
 
     if accumulator.nfreq < 1:
-        raise RuntimeError("Something went wrong while initializing the "
-                           "accumulator!")
+        raise RuntimeError("Problem with initializing the accumulator!")
 
-    cdef Py_ssize_t num_segments = dz.size
     cdef double rest_freq3 = rest_freq_Hz*rest_freq_Hz*rest_freq_Hz
+    cdef double source_func_numerator = (2*_H_CGS * rest_freq3 /
+                                         (_C_CGS * _C_CGS))
 
-    # scratch space
+    # temproray variables used within the loop:
+    cdef double alpha_center, stim_emission_correction, source_func_cgs
     cdef double* alpha_nu_cgs = <double*> PyMem_Malloc(sizeof(double) * nfreq)
 
-    cdef Py_ssize_t pos_i, freq_i
+    cdef Py_ssize_t num_segments = dz.size
+    cdef Py_ssize_t pos_i, freq_i # indexing variables
     for pos_i in range(num_segments):
 
         # Using equations 1.78 and 1.79 of Rybicki and Lighman to get
@@ -1011,15 +1013,18 @@ def _generate_noscatter_spectrum_cy(line_props, obs_freq, vLOS, ndens,
         # - the source function
         # - NOTE: there are some weird ambiguities in the frequency dependence
         #   in these equations. These are discussed below.
-        stim_emission_correction = (1.0 - n2g1_div_n1g2[pos_i])
-        for freq_i in range(nfreq):
-            alpha_nu_cgs[freq_i] = (
-                _H_CGS * rest_freq_Hz * ndens_1[pos_i] * B12_cgs *
-                stim_emission_correction * profiles[freq_i,pos_i]
-            ) / (4*np.pi)
 
-        tmp = (1.0/n2g1_div_n1g2[pos_i]) - 1.0
-        source_func_cgs = (2*_H_CGS * rest_freq3 / (_C_CGS * _C_CGS)) / tmp
+        # first compute alpha at the line-center (ignoring broadening profile)
+        # & then compute alpha as a function of frequency:
+        stim_emission_correction = (1.0 - n2g1_div_n1g2[pos_i])
+        alpha_center = (_H_CGS * rest_freq_Hz * ndens_1[pos_i] * B12_cgs *
+                        stim_emission_correction) / (4*np.pi)
+        for freq_i in range(nfreq):
+            alpha_nu_cgs[freq_i] = alpha_center * profiles[freq_i,pos_i]
+
+        source_func_cgs = (
+            source_func_numerator / ((1.0/n2g1_div_n1g2[pos_i]) - 1.0)
+        )
 
         # FREQUENCY AMBIGUITIES:
         # - in Rybicki and Lighman, the notation used in equations 1.78 and 1.79
