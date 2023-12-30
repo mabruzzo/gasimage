@@ -15,7 +15,7 @@ from gasimage._generate_spec_cy import (
 from gasimage.rt_config import (
     builtin_halpha_props, crude_H_partition_func
 )
-
+from gasimage.accumulators import consolidate_noscatter_rtchunks
 
 from py_generate_noscatter_spectrum import (
     _generate_noscatter_spectrum,
@@ -317,6 +317,47 @@ def test_generate_noscatter_ray_spectrum():
     _test_generate_noscatter_ray_spectrum(zero_vlos = True,
                                           nominal_dz = (0.25) * unyt.pc)
 
+# list the kwargs that are array and both:
+#  - the expected units in the cython-version
+#  - if we expect the length to vary with the choice of ray
+_noscatter_kwargs_arr_spec = (
+    ('obs_freq', 'Hz', False), ('vLOS', 'cm/s', True),
+    ('ndens', 'cm**-3', True), ('doppler_parameter_b', 'cm/s', True),
+    ('kinetic_T', 'K', True), ('dz', 'cm', True),
+)
+
+def subdivided3_noscatter(**main_kwargs):
+    # we define this function in order to ensure that our consolidate function
+    # works correctly!
+
+    size = main_kwargs['vLOS'].size
+    assert size > 0
+    eff_n_partitions = min(size, 3)
+
+    step = size // eff_n_partitions
+
+    results = []
+
+    ordered_keys = ('integrated_source', 'total_tau')
+
+    for i in range(eff_n_partitions):
+        start, stop = i*step, (i+1)*step
+        if (i+1) == eff_n_partitions:
+            stop = size
+
+        cur_kwargs = main_kwargs.copy()
+        for kw, _, ray_dependent in _noscatter_kwargs_arr_spec:
+            if ray_dependent:
+                cur_kwargs[kw] = main_kwargs[kw][start:stop]
+
+        results.append(
+            dict(zip(ordered_keys, _generate_noscatter_spectrum(**cur_kwargs)))
+        )
+
+    tmp = consolidate_noscatter_rtchunks(results)
+    return [tmp[k] for k in ordered_keys]
+
+
 def _test_cmp_generate_ray_spectrum(nfreq = 401, ngas = 100,
                                     zero_vlos = True,
                                     nominal_dz = (0.25/100) * unyt.pc,
@@ -330,6 +371,7 @@ def _test_cmp_generate_ray_spectrum(nfreq = 401, ngas = 100,
 
     fn_name_pairs = [
         (_generate_noscatter_spectrum, 'python version'),
+        (subdivided3_noscatter, 'subdivided_py'),
         (_generate_noscatter_spectrum_cy, 'optimized cython version')]
 
     data = _gen_test_data(rest_freq = line_props.freq_quantity, nfreq = nfreq,
@@ -348,12 +390,7 @@ def _test_cmp_generate_ray_spectrum(nfreq = 401, ngas = 100,
     def _customize_kwargs(fn, kwargs):
         if fn == _generate_noscatter_spectrum_cy:
             out = kwargs.copy()
-            expected_kw_u_pairs = [
-                ('obs_freq', 'Hz'), ('vLOS', 'cm/s'), ('ndens', 'cm**-3'),
-                ('doppler_parameter_b', 'cm/s'), ('kinetic_T', 'K'),
-                ('dz', 'cm'),
-            ]
-            for (kw, u) in expected_kw_u_pairs:
+            for (kw, u, _) in _noscatter_kwargs_arr_spec:
                 out[kw] = kwargs[kw].to(u).ndview
             return out
         return kwargs
@@ -372,26 +409,32 @@ def _test_cmp_generate_ray_spectrum(nfreq = 401, ngas = 100,
         tau_l.append(tau_tot)
         print(f'{fn_name}, elapsed: {t2-t1}')
 
-    for name, out_l in [("integrated_source",integrated_source_l),
-                        ("tau_tot", tau_l)]:
-        py_version, cy_version = out_l
+    py_fn_name = fn_name_pairs[0][1]
 
-        np.testing.assert_allclose(
-            actual = cy_version, desired = py_version, rtol=rtol, atol = atol,
-            err_msg = (f"'{name}'-results produced by the python and optimized "
-                       "cython versions disagree")
-        )
+    for compare_fn_ind in range(1, len(fn_name_pairs)):
+        compare_fn_name = fn_name_pairs[compare_fn_ind][1]
+
+        for name, out_l in [("integrated_source",integrated_source_l),
+                            ("tau_tot", tau_l)][::-1]:
+            py_version, cy_version = out_l[0], out_l[compare_fn_ind]
+
+            np.testing.assert_allclose(
+                actual = cy_version, desired = py_version,
+                rtol=rtol, atol = atol,
+                err_msg = (f"'{name}'-results produced by the '{py_fn_name}' & "
+                           f"'{compare_fn_name}' versions of the func disagree")
+            )
 
 
 def test_cmp_generate_noscatter_ray_spectrum():
 
     _test_cmp_generate_ray_spectrum(zero_vlos = True,
                                     nominal_dz = (0.25/100) * unyt.pc,
-                                    rtol = 2e-13)
+                                    rtol = 9e-13)
 
     _test_cmp_generate_ray_spectrum(zero_vlos = False,
                                     nominal_dz = (0.25/100) * unyt.pc,
-                                    rtol = 3e-11)
+                                    rtol = 2e-10)
     
     _test_cmp_generate_ray_spectrum(zero_vlos = False,
                                     nominal_dz = (0.25/20) * unyt.pc,
