@@ -59,19 +59,27 @@ def plot_ray_spectrum(obs_freq, dz_vals, integrated_source, total_tau,
     plt.show()
 
 
-def plot_rel_err(obs_freq, actual, other):
+def plot_rel_err(obs_freq, actual, other, ray_ind = None):
     import matplotlib.pyplot as plt
+
+    if ray_ind is not None:
+        return plot_rel_err(
+            obs_freq,
+            dict((k,v[:, ray_ind]) for k,v in actual.items()),
+            dict((k,v[:, ray_ind]) for k,v in other.items()),
+            ray_ind = None)
 
     
     wave = (unyt.c_cgs/obs_freq).to('nm')
 
-    fig,ax_arr = plt.subplots(2,1, figsize = (4,8), sharex = True)
+    
 
     def rel_err(key, idx = slice(None)):
         return (actual[key] - other[key]) / other[key]
 
     
     if actual['integrated_source'].ndim > 1:
+        fig,ax_arr = plt.subplots(2,1, figsize = (4,8), sharex = True)
         for i in range(actual['integrated_source'].shape[1]):
             ax_arr[0].plot(wave,
                            rel_err('integrated_source', idx = (slice(None),i))
@@ -80,10 +88,21 @@ def plot_rel_err(obs_freq, actual, other):
                            rel_err('total_tau', idx = (slice(None),i))
             )
     else:
-        ax_arr[0].plot(wave, rel_err('integrated_source'))
-        ax_arr[1].plot(wave, rel_err('total_tau'))
-    ax_arr[1].set_xlabel('wavelength (nm)')
-    ax_arr[0].set_ylabel(r'$I_\nu(\lambda)$')
-    ax_arr[1].set_ylabel(r'$\tau_\nu(\lambda)$')
+        fig,ax_arr = plt.subplots(3,2, figsize = (4,8), sharex = True)
+        for i, (k,label) in enumerate([
+                ('integrated_source', r'$I_\nu(\lambda)$'),
+                ('total_tau', r'$\tau_\nu(\lambda)$')]):
+            
+            ax_arr[0,i].plot(wave, actual[k])
+            ax_arr[0,i].set_ylabel('actual ' + label)
+
+            ax_arr[1,i].plot(wave, other[k])
+            ax_arr[1,i].set_ylabel('other ' + label)
+
+            ax_arr[2,i].plot(wave, rel_err(k))
+            ax_arr[2,i].set_ylabel('reldiff ' + label)
+    for ax in ax_arr[-1,:]:
+        ax.set_xlabel('wavelength (nm)')
+        ax.set_ylabel('reldiff')
     fig.tight_layout()
     plt.show()

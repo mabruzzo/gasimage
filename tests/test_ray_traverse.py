@@ -3,7 +3,7 @@ import yt
 
 from gasimage._ray_intersections_cy import traverse_grid
 
-from test_compare import ray_values_startend
+from ray_testing_utils import ray_values_startend
 
 
 # these all need to be replaced with actual tests that check correctness

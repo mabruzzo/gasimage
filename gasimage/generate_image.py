@@ -32,6 +32,62 @@ def _first_or_default(itr, default=None):
     # returns the first element of the iterator/iterable or a default value.
     return next(iter(itr), default)
 
+# define a helper function the us used to setup for calling an accumulator
+def fetch_grid_and_spatial_props(ds, grid_index, cm_per_length_unit,
+                                 length_unit_name, rescale_length_factor = 1.0):
+    """
+    Helper function used to
+
+    Parameters
+    ----------
+    ds : yt.data_objects.static_output.Dataset
+        The dataset being processed. This is expected to be unigrid dataset.
+        With that said, this functionallity could easily be adjusted to work
+        with AMR
+    grid_index
+        Used to specify the grid-index in yt's representation of the datset's
+        data-decomposition
+    cm_per_length_unit : float
+        The number of cm per length unit (in the length units we are using)
+    length_unit_name : str
+        The name of the length unit we are effectively using
+    rescale_length_factor: float
+        The width of each cell is multiplied by this factor. (This effectively
+        holds the position of the simulation's origin fixed in place).
+
+    Returns
+    -------
+    grid : `collections.abc.Mapping`
+        This is a mapping where the field-values are easily fetched. At the
+        moment, this is some kind of yt-object. But in the future, we may
+        switch to a dict (or some more specialized function)
+    spatial_props : SpatialGridProps
+        Encodes spatial information about the grid
+
+    Notes
+    -----
+    In the future, we may want to pass a list of the fields that are required
+    by an accumulator as an argument. That way, rather than returning an
+    interal yt grid-object, we can return a dict or something else... This will
+    become more important if we start requiring ghost zones
+    """
+
+    grid = ds.index.grids[grid_index]
+
+    # sanity check!
+    assert (np.array(grid.shape) ==
+            ds.index.grid_dimensions[grid_index]).all()
+
+    spatial_props = SpatialGridProps(
+        cm_per_length_unit = cm_per_length_unit,
+        grid_shape = ds.index.grid_dimensions[grid_index],
+        grid_left_edge = ds.index.grid_left_edge[grid_index],
+        grid_right_edge = ds.index.grid_right_edge[grid_index],
+        length_unit = length_unit_name,
+        rescale_factor = rescale_length_factor)
+
+    return grid, spatial_props
+
 class Worker:
     """
     This does most of the ray-casting heavy lifting.
@@ -80,20 +136,11 @@ class Worker:
             ds = _ds_initializer()
 
         # load properties about the current block of the dataset
-        grid = ds.index.grids[grid_index]
-
-        # sanity check!
-        assert (np.array(grid.shape) ==
-                ds.index.grid_dimensions[grid_index]).all()
-
-        spatial_grid_props = SpatialGridProps(
+        grid, spatial_grid_props = fetch_grid_and_spatial_props(
+            grid_index = grid_index, ds = ds,
             cm_per_length_unit = self.cm_per_length_unit,
-            grid_shape = ds.index.grid_dimensions[grid_index],
-            grid_left_edge = ds.index.grid_left_edge[grid_index],
-            grid_right_edge = ds.index.grid_right_edge[grid_index],
-            length_unit = self.length_unit_name,
-            rescale_factor = self.rescale_length_factor
-        )
+            length_unit_name = self.length_unit_name,
+            rescale_length_factor = self.rescale_length_factor)
 
         # now actually process the rays
         out = self.accum_strat.do_work(
@@ -136,6 +183,32 @@ def _top_level_grid_indices(ds):
 
 def itr_traverse_top_level_grids(ds, ray_list, units,
                                  rescale_length_factor = 1.0):
+    """
+    iterate over each ray: providing the subgrid traversed by each ray.
+
+    Parameters
+    ----------
+    ds
+        The yt-dataset. This is expected to be unigrid dataset. With that said,
+        this functionallity could easily be adjusted to work with AMR
+    ray_list
+        A collection of rays
+    units
+        The name of the units that the ray-properties are effectively in
+    rescale_length_factor: float
+        The width of each cell is multiplied by this factor. (This effectively
+        holds the position of the simulation's origin fixed in place).
+
+    Yields
+    ------
+    subgrid_sequence : np.ndarray
+        Sequence of subgrid ids (i.e. a 1D array), traversed by a ray ordered 
+        with increasing distance from the start of the ray
+    dists : np.ndarray
+        Array of the same length as subgrid_sequence. This provides the
+        distance through each ray
+    """
+    
     subgrid_array = _top_level_grid_indices(ds)
     domain_left_edge = (
         ds.domain_left_edge.to(units).v * rescale_length_factor
@@ -158,7 +231,7 @@ def itr_traverse_top_level_grids(ds, ray_list, units,
             left_edge = domain_left_edge, right_edge = domain_right_edge)
 
         if len(intersect_dist) < 2:
-            subgrid_sequence,dists = np.array([]),np.array([])
+            subgrid_sequence,dists = np.array([]), np.array([])
         else:
             idx,dists = traverse_grid(line_uvec = ray_uvec,
                                       line_start = ray_start,

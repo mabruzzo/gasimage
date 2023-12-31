@@ -6,153 +6,21 @@ import unyt
 import yt
 
 
-from gasimage._ray_intersections_cy import ray_box_intersections
+
 from gasimage.generate_image import freq_from_v_channels, generate_image
 
 from gasimage.accumulators import NoScatterRTAccumStrat
 from gasimage.rt_config import builtin_halpha_props, crude_H_partition_func
 from gasimage.ray_collection import ConcreteRayList
 from gasimage.utils.testing import assert_allclose_units
+from gasimage._generate_spec_cy import _generate_noscatter_spectrum_cy
 
 from py_generate_noscatter_spectrum import (
     _generate_noscatter_spectrum as py_generate_noscatter_spectrum
 )
+from ray_testing_utils import ray_values, _to_uvec
 from test_full import _dummy_create_field_callback
 
-def ray_values_startend(ds, start_end_pairs, fields = [],
-                        find_indices = False):
-
-    # even if fields is empty, it always contains an entry call dl, which is
-    # the length through a cell
-
-    max_level = np.amax(ds.index.grid_levels)
-
-    if find_indices:
-        grid_left_edge = ds.domain_left_edge.to('code_length').ndview
-        cell_width = (
-            ds.domain_width/ds.domain_dimensions).to('code_length').ndview
-    else:
-        grid_left_edge, cell_width = None, None
-
-    for start,end in start_end_pairs:
-        cur_fields = {}
-        start, end = np.asanyarray(start), np.asanyarray(end)
-        total_length = np.linalg.norm(end - start)
-
-        num_matching_components = np.count_nonzero(start == end)
-        if (num_matching_components == 3) or (total_length == 0.0):
-            raise AssertionError("START AND END POINTS ARE COLOCATED")
-        elif False and (num_matching_components == 2):
-            if start[0] != end[0]:
-                cast_ax, plane_coord = 0, (start[1],start[2])
-            elif start[1] != end[1]:
-                cast_ax, plane_coord = 1, (start[2],start[0])
-            else:
-                cast_ax, plane_coord = 2, (start[0],start[1])
-            ray = ds.ortho_ray(axis = cast_ax, coords = plane_coord)
-
-            l,r = ds.domain_left_edge[cast_ax], ds.domain_right_edge[cast_ax]
-            if isinstance(l, unyt.unyt_array):
-                l = l.to('code_length').v
-            if isinstance(l, unyt.unyt_array):
-                r = r.to('code_length').v
-            assert l >= min(start[cast_ax], end[cast_ax])
-            assert r <= max(start[cast_ax], end[cast_ax])
-
-            if max_level != 0:
-                raise RuntimeError("Problems may arise with AMR")
-
-            pos_fields = ['x','y','z']
-            sorted_idx = np.argsort(ray[pos_fields[cast_ax]])
-            dl = ray[['dx','dy','dz'][cast_ax]]
-
-            #cur_fields
-            #raise RuntimeError(list(zip(ray['dx'],ray['dy'],ray['dz'])))
-        else:
-            ray = ds.ray(start, end)
-
-            pos_fields = [('index', ax) for ax in 'xyz'] 
-            sorted_idx = np.argsort(ray["t"])
-            dl = ray['dts'][sorted_idx] * total_length
-
-        if isinstance(dl, unyt.unyt_array):
-            if dl.units.is_dimensionless:
-                dl = dl.ndview
-            else:
-                dl = dl.to('code_length')
-        for field in fields:
-            cur_fields[field] = ray[field][sorted_idx]
-        cur_fields['dl'] = dl
-
-        if find_indices:
-            indices = np.empty(shape = (3, sorted_idx.size), dtype = int)
-            for i, pos_field in enumerate(pos_fields):
-                left_offset = (
-                    ray[pos_field][sorted_idx].to('code_length').ndview -
-                    grid_left_edge[i] - 0.5 * cell_width[i])
-                indices[i,:] = np.trunc(
-                    left_offset/cell_width[i] + 0.5).astype(int)
-            cur_fields['indices'] = indices
-        yield cur_fields
-
-def _zip_vectors(a,b):
-    arg_shapes = []
-    for arg in [a,b]:
-        arg_shape = np.shape(arg)
-        arg_ndim = len(arg_shape) # == np.ndim(arg)
-        if arg_ndim != 1 and arg_ndim != 2:
-            raise ValueError("each argument must be 1d or 2d")
-        elif arg_shape[-1] != 3:
-            raise ValueError("the last axis of each argument must have a "
-                             "length of 3")
-        arg_shapes.append(arg_shape)
-
-    if np.ndim(a) == 1 and np.ndim(b) == 1:
-        yield a,b
-    elif np.ndim(a) == 1:
-        for b_elem in b:
-            yield a,b_elem
-    elif np.ndim(b) == 1:
-        for a_elem in a:
-            yield a_elem, b
-    elif arg_shapes[0] != arg_shapes[1]:
-        raise ValueError("when both arguments are 2d, they must have "
-                         "identical shapes") 
-    else:
-        yield from zip(a, b)
-
-def _to_uvec(vec):
-    vec = np.asanyarray(vec)
-    if (vec == 0).all():
-        raise ValueError()
-    return vec / np.linalg.norm(vec)
-
-def ray_values(ds, ray_start, ray_vec, fields = [],
-               find_indices = False, include_uvec = False):
-
-    # even if fields is empty, it always contains an entry call dl, which is
-    # the length through a cell
-
-    left_edge, right_edge = ds.domain_left_edge, ds.domain_right_edge
-
-    pairs = []
-    uvec_l = []
-    for cur_ray_start, cur_ray_vec in _zip_vectors(ray_start, ray_vec):
-        uvec = _to_uvec(cur_ray_vec)
-
-        intersect_dists = ray_box_intersections(cur_ray_start, uvec,
-                                                left_edge = left_edge,
-                                                right_edge = right_edge)
-        assert len(intersect_dists) > 0
-
-        # intentionally overshoot the back edge of the grid!
-        cur_ray_stop = cur_ray_start + uvec * 1.2 * np.amax(intersect_dists)
-        pairs.append((cur_ray_start, cur_ray_stop))
-
-    itr = ray_values_startend(ds, start_end_pairs = pairs, fields = fields,
-                              find_indices = find_indices)
-
-    yield from itr
 
 def _get_ray_start_vec(ds):
     start = ds.arr(
@@ -231,7 +99,7 @@ def _get_ray_start_vec(ds):
           [-1.91270095e-01,  1.39010729e+01,  1.07112725e-01],
           [-2.06571390e-01,  1.39009571e+01,  1.07112725e-01],
           [-2.21872616e-01,  1.39008325e+01,  1.07112725e-01]]], 'kpc'
-    ).to('code_length').ndview[:2,:2,:]
+    ).to('code_length').ndview[:,:,:]
 
     stop = stop.reshape(-1,3)
 
@@ -265,7 +133,7 @@ from debug_plotting import plot_ray_spectrum, plot_rel_err
 
 # We are going to setup 2
 
-def test_compare_full_noscatter_rt(indata_dir):
+def _test_compare_full_noscatter_rt(indata_dir, aligned_rays):
     enzoe_sim_path = os.path.join(
         indata_dir, ('X100_M1.5_HD_CDdftCstr_R56.38_logP3_Res8/cloud_07.5000/'
                      'cloud_07.5000.block_list')
@@ -288,13 +156,27 @@ def test_compare_full_noscatter_rt(indata_dir):
     ds = yt.load(enzoe_sim_path)
     _dummy_create_field_callback(ds, use_trident_ion = True)
 
-    # the errors are much larger when we use _get_ray_start_vec(ds)
-    # -> I suspect this is because the rays in that case are on angles and
-    #    there is a small amount of disagreement with what yt returns... Plus
-    #    the distances are less-accurate with the YTRay appraoch
-    # -> it's worth noting that the discrepancies seem largest furthest away
-    #    from the line-center, which is actually comforting...
-    start, vec = _get_ray_start_vec2(ds)
+    if not aligned_rays:
+        # the errors are MUCH larger in this case!
+        # -> I suspect this is because the rays in that case are on angles and
+        #    there is a small amount of disagreement with what yt returns...
+        #    Plus the distances are less-accurate with the YTRay appraoch
+        # -> it's worth noting that the discrepancies seem largest furthest away
+        #    from the line-center, which is actually comforting...
+        start, vec = _get_ray_start_vec(ds)
+        if True: # highlight problematic case!
+            #start = np.array([start])
+            vec = vec[4:6, :]
+            print(vec)
+        rtol_intensity, atol_intensity = 1.e-6, 1.e-6
+        rtol_tau, atol_tau = 0.0, 0.0
+        case_name = 'perspective-rays'
+    else:
+        start, vec = _get_ray_start_vec2(ds)
+        rtol_intensity, atol_intensity = 3e-9, 0.0
+        rtol_tau, atol_tau = 2e-10, 0.0
+        case_name = 'aligned-rays'
+
     if start.size < vec.size:
         start = np.tile(start, (vec.shape[0],1))
     elif start.size > vec.size:
@@ -316,18 +198,57 @@ def test_compare_full_noscatter_rt(indata_dir):
                               rest_freq = line_props.freq_quantity)
         plot_rel_err(obs_freq, actual_rslt, alt_rslt)
 
+    if True:
+        calc_rdiff = lambda k: (actual_rslt[k] - alt_rslt[k]) / actual_rslt[k]
+        calc_adiff = lambda k: (actual_rslt[k] - alt_rslt[k])
+
+        start = ray_collection.ray_start_codeLen
+        vec = ray_collection.get_ray_uvec()
+        rdiff = calc_rdiff('integrated_source')
+        adiff = calc_adiff('integrated_source')
+
+        # find ray_ind where max is largest
+        ray_i = np.argmax(np.abs(rdiff).max(axis=0))
+        # find the index of that ray's spectra where rdiff is largest
+        rel_max_i = np.argmax(np.abs(rdiff[:,ray_i]))
+        print(ray_i, rel_max_i)
+
+        print(calc_rdiff('integrated_source').shape)
+        print(
+            'largest rdiff is ray:', ray_i,
+            '\n  vec:', vec[ray_i],
+            '\n  rdiff maximized at freq of:', obs_freq[rel_max_i],
+            '\n    -> wave = ', (unyt.c_cgs/obs_freq[rel_max_i]).to('nm'),
+            '\n    -> rdiff intensity= ', rdiff[rel_max_i, ray_i],
+            '\n    -> adiff intensity= ', adiff[rel_max_i, ray_i],
+            '\n    -> rdiff total_tau= ',
+                calc_rdiff('total_tau')[rel_max_i, ray_i],
+            '\n    -> adiff total_tau= ',
+                calc_adiff('total_tau')[rel_max_i, ray_i],
+            '\n    -> alt integrated_source = ',
+                alt_rslt['integrated_source'][rel_max_i, ray_i],
+            '\n    -> alt total_tau = ',
+                alt_rslt['total_tau'][rel_max_i, ray_i] 
+        )
+
+        plot_rel_err(obs_freq, actual = actual_rslt, other = alt_rslt,
+                     ray_ind = ray_i)
+
     assert_allclose_units(
         actual = actual_rslt['integrated_source'],
-        desired = alt_rslt['integrated_source'], rtol = 3e-9, atol=0,
+        desired = alt_rslt['integrated_source'], rtol = rtol_intensity,
+        atol=atol_intensity,
         err_msg = ("error occured while comparing the integrated_source with "
-                   "the result from a simpler (slower) implementation")
+                   "the result from a simpler (slower) implementation -- when "
+                   f"using {case_name} rays")
     )
 
     np.testing.assert_allclose(
         actual = actual_rslt['total_tau'], desired = alt_rslt['total_tau'],
-        rtol = 2e-10, atol=0,
+        rtol = rtol_tau, atol=atol_tau,
         err_msg = ("error occured while comparing the total optical depth with "
-                   "the result from a simpler (slower) implementation")
+                   "the result from a simpler (slower) implementation -- when "
+                   f"using {case_name} rays")
     )
 
 def _dumber_full_noscatter_rt(accum_strat, concrete_ray_list, ds):
@@ -348,13 +269,19 @@ def _dumber_full_noscatter_rt(accum_strat, concrete_ray_list, ds):
                              dtype = 'f8', fill_value = np.nan)
 
     fields = [accum_strat.ndens_field, ('gas', 'temperature'),
+              ('index', 'x'), ('index', 'y'), ('index','z'),
               ('gas','mean_molecular_weight'), ('gas', 'velocity_x'),
               ('gas', 'velocity_y'), ('gas', 'velocity_z')]
     itr = ray_values(ds, ray_start = start, ray_vec = vec,
-                     fields = fields, find_indices = False)
+                     fields = fields, find_indices = True,
+                     kind = 'yt')#'gasimage')
+    t1 = datetime.datetime.now()
     for i, ray_data in enumerate(itr):
-        print(i)
-        t1 = datetime.datetime.now()
+        if i == 0:
+            first = unyt.unyt_array([ray_data['index', ax][0] for ax in 'xyz'])
+            last = unyt.unyt_array([ray_data['index', ax][-1] for ax in 'xyz'])
+            print('vec:', vec[i], 'first:', first, 'last:', last)
+            print(ray_data['indices'].shape)
         uvec = _to_uvec(vec[i])
         vLOS = (uvec[0] * ray_data['gas','velocity_x'] +
                 uvec[1] * ray_data['gas','velocity_y'] +
@@ -371,20 +298,39 @@ def _dumber_full_noscatter_rt(accum_strat, concrete_ray_list, ds):
                 (accum_strat.species_mass_g * unyt.g)
             ).to('cm/s')
 
-        tmp = py_generate_noscatter_spectrum(
-            line_props = accum_strat.line_props,
-            obs_freq = unyt.unyt_array(accum_strat.obs_freq_Hz, 'Hz'),
-            vLOS = vLOS,
-            ndens = ray_data[accum_strat.ndens_field],
-            kinetic_T = ray_data['gas','temperature'],
-            doppler_parameter_b = doppler_parameter_b,
-            dz = ds.arr(ray_data['dl'],'code_length').to('cm'),
-            level_pops_arg = accum_strat.partition_func
-        )
+        if True:
+            tmp = _generate_noscatter_spectrum_cy(
+                line_props = accum_strat.line_props,
+                obs_freq = unyt.unyt_array(accum_strat.obs_freq_Hz, 'Hz').ndview,
+                vLOS = vLOS.to('cm/s').ndview,
+                ndens = ray_data[accum_strat.ndens_field].to('cm**-3').ndview,
+                kinetic_T = ray_data['gas','temperature'].to('K').ndview,
+                doppler_parameter_b = doppler_parameter_b.to('cm/s').ndview,
+                dz = ds.arr(ray_data['dl'],'code_length').to('cm').ndview,
+                level_pops_arg = accum_strat.partition_func
+            )
+        else:
+            tmp = py_generate_noscatter_spectrum(
+                line_props = accum_strat.line_props,
+                obs_freq = unyt.unyt_array(accum_strat.obs_freq_Hz, 'Hz'),
+                vLOS = vLOS,
+                ndens = ray_data[accum_strat.ndens_field],
+                kinetic_T = ray_data['gas','temperature'],
+                doppler_parameter_b = doppler_parameter_b,
+                dz = ds.arr(ray_data['dl'],'code_length').to('cm'),
+                level_pops_arg = accum_strat.partition_func
+            )
         integrated_source[:,i] = tmp[0]
         integrated_tau[:,i] = tmp[1]
-        t2 = datetime.datetime.now()
-        print(t2 - t1)
+    t2 = datetime.datetime.now()
+    print(t2 - t1)
 
     return {'integrated_source' : integrated_source,
             'total_tau' : integrated_tau}
+
+
+def test_compare_full_noscatter_rt_alignedrays(indata_dir):
+    _test_compare_full_noscatter_rt(indata_dir, aligned_rays = True)
+
+def test_compare_full_noscatter_rt_perspectiverays(indata_dir):
+    _test_compare_full_noscatter_rt(indata_dir, aligned_rays = False)
