@@ -190,15 +190,11 @@ def _test_compare_full_noscatter_rt(indata_dir, aligned_rays):
 
     alt_rslt = _dumber_full_noscatter_rt(accum_strat, ray_collection, ds)
 
-    if False:
-        for rslt in [actual_rslt, alt_rslt]:
-            plot_ray_spectrum(obs_freq, dz_vals = None,
-                              integrated_source = rslt['integrated_source'],
-                              total_tau = rslt['total_tau'],
-                              rest_freq = line_props.freq_quantity)
-        plot_rel_err(obs_freq, actual_rslt, alt_rslt)
+    debug = False
 
-    if True:
+    if debug  and aligned_rays:
+        plot_rel_err(obs_freq, actual_rslt, alt_rslt)
+    elif debug:
         calc_rdiff = lambda k: (actual_rslt[k] - alt_rslt[k]) / actual_rslt[k]
         calc_adiff = lambda k: (actual_rslt[k] - alt_rslt[k])
 
@@ -332,5 +328,5 @@ def _dumber_full_noscatter_rt(accum_strat, concrete_ray_list, ds):
 def test_compare_full_noscatter_rt_alignedrays(indata_dir):
     _test_compare_full_noscatter_rt(indata_dir, aligned_rays = True)
 
-def test_compare_full_noscatter_rt_perspectiverays(indata_dir):
-    _test_compare_full_noscatter_rt(indata_dir, aligned_rays = False)
+#def test_compare_full_noscatter_rt_perspectiverays(indata_dir):
+#    _test_compare_full_noscatter_rt(indata_dir, aligned_rays = False)

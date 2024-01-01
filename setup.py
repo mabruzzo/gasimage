@@ -16,9 +16,14 @@ class build_ext(_build_ext):
         self.include_dirs.append(numpy.get_include())
 
 ext_modules = [
-    Extension('gasimage._ray_intersections_cy',
-              ['gasimage/_ray_intersections_cy.pyx'],
+    Extension('gasimage.ray_traversal._ray_intersections_cy',
+              ['gasimage/ray_traversal/_ray_intersections_cy.pyx'],
               define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+    ),
+    Extension('gasimage.ray_traversal._yt_grid_traversal_cy',
+              ['gasimage/ray_traversal/_yt_grid_traversal_cy.pyx'],
+              define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+              language = 'c++'
     ),
     Extension('gasimage._generate_spec_cy',
               ['gasimage/_generate_spec_cy.pyx'],

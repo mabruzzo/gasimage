@@ -1,7 +1,7 @@
 import numpy as np
 import unyt
 
-from .._ray_intersections_cy import ray_box_intersections
+from ..ray_traversal import ray_box_intersections
 
 def ray_start_stop(ray_collection, omit_intersectionless = False,
                    code_length = None, **kw):

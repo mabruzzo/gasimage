@@ -43,54 +43,11 @@ from ._generate_spec_cy import (
     generate_ray_spectrum,
     generate_noscatter_ray_spectrum
 )
+from .ray_traversal.spatial_grid_props import SpatialGridProps
 from .rt_config import LineProperties
 
 # define the actual AccumStratT typing stub
 AccumStratT = TypeVar("AccumStratT")
-
-# this is a helper class that is used by multiple accumulator strategies
-
-class SpatialGridProps:
-    """
-    This collects spatial properties of the current block (or grid) of the
-    dataset
-
-    Notes
-    -----
-    The original motivation for doing this was to allow rescaling of the grid
-    in adiabatic simulations. It's unclear whether that functionality still
-    works properly (it definitely hasn't been tested in all contexts).
-    """
-    cm_per_length_unit : float
-    grid_shape: np.ndarray
-    left_edge: np.ndarray
-    right_edge: np.ndarray
-    cell_width: np.ndarray
-
-    def __init__(self, *, cm_per_length_unit: float,
-                 grid_shape: np.ndarray,
-                 grid_left_edge: unyt.unyt_array,
-                 grid_right_edge: unyt.unyt_array,
-                 length_unit: str,
-                 rescale_factor: float = 1.0):
-
-        assert cm_per_length_unit > 0
-        self.cm_per_length_unit = cm_per_length_unit
-
-        assert grid_shape.shape == (3,) and (grid_shape > 0).all()
-        assert issubclass(grid_shape.dtype.type, np.integer)
-        self.grid_shape = grid_shape.copy() # copy it so it owns the data
-
-        assert grid_left_edge.shape == grid_right_edge.shape == (3,)
-        self.left_edge = grid_left_edge.to(length_unit).v * rescale_factor
-        self.right_edge = grid_right_edge.to(length_unit).v * rescale_factor
-        self.cell_width = (
-            (self.right_edge - self.left_edge) / np.array(grid_shape)
-        )
-
-        for attr in ['grid_shape', 'left_edge', 'right_edge', 'cell_width']:
-            getattr(self,attr).flags['WRITEABLE'] = False
-            assert getattr(self,attr).flags['OWNDATA'] == True # sanity check!
 
 def _validate_basic_quan_props(accum, rslt):
     # this is borrowed and reworked from pyvsf

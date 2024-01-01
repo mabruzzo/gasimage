@@ -23,10 +23,10 @@ from .accumulators import (
     OpticallyThinAccumStrat,
     SpatialGridProps
 )
-from ._ray_intersections_cy import ray_box_intersections, traverse_grid
 from .ray_collection import ConcreteRayList
-from .utils.misc import _has_consistent_dims
+from .ray_traversal import ray_box_intersections, traverse_grid
 from .rt_config import default_spin_flip_props
+from .utils.misc import _has_consistent_dims
 
 def _first_or_default(itr, default=None):
     # returns the first element of the iterator/iterable or a default value.

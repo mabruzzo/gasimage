@@ -2,7 +2,7 @@ import numpy as np
 import unyt
 
 from ._generate_spec_cy import _calc_doppler_parameter_b, NdensRatio
-from ._ray_intersections_cy import traverse_grid
+from .ray_traversal import traverse_grid
 from .rt_config import default_spin_flip_props
 from .utils.misc import _has_consistent_dims
 

@@ -1,7 +1,7 @@
 import numpy as np
 import yt
 
-from gasimage._ray_intersections_cy import traverse_grid
+from gasimage.ray_traversal import traverse_grid
 
 from ray_testing_utils import ray_values_startend
 

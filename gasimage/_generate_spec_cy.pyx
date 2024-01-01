@@ -266,7 +266,7 @@ cpdef _generate_ray_spectrum_cy(const double[::1] obs_freq,
 
     return out
 
-from ._ray_intersections_cy import traverse_grid, max_num_intersections
+from .ray_traversal import traverse_grid, max_num_intersections
 from .rt_config import default_spin_flip_props
 from .utils.misc import check_consistent_arg_dims, _has_consistent_dims
 

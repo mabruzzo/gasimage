@@ -75,34 +75,43 @@ def plot_rel_err(obs_freq, actual, other, ray_ind = None):
     
 
     def rel_err(key, idx = slice(None)):
-        return (actual[key] - other[key]) / other[key]
+        return ((actual[key][idx] - other[key][idx]) / other[key][idx])
+    def abs_err(key, idx = slice(None)):
+        return (actual[key][idx] - other[key][idx])
 
-    
-    if actual['integrated_source'].ndim > 1:
-        fig,ax_arr = plt.subplots(2,1, figsize = (4,8), sharex = True)
-        for i in range(actual['integrated_source'].shape[1]):
-            ax_arr[0].plot(wave,
-                           rel_err('integrated_source', idx = (slice(None),i))
-            )
-            ax_arr[1].plot(wave,
-                           rel_err('total_tau', idx = (slice(None),i))
-            )
-    else:
-        fig,ax_arr = plt.subplots(3,2, figsize = (4,8), sharex = True)
-        for i, (k,label) in enumerate([
-                ('integrated_source', r'$I_\nu(\lambda)$'),
-                ('total_tau', r'$\tau_\nu(\lambda)$')]):
-            
+    fig,ax_arr = plt.subplots(4,2, figsize = (4,8), sharex = True)
+    for i, (k,label) in enumerate([('integrated_source', r'$I_\nu(\lambda)$'),
+                                   ('total_tau', r'$\tau_\nu(\lambda)$')]):
+
+        if actual['integrated_source'].ndim > 1:
+            for j in range(actual['integrated_source'].shape[1]):
+                ax_arr[0,i].plot(wave, actual[k][:,j])
+        else:
             ax_arr[0,i].plot(wave, actual[k])
-            ax_arr[0,i].set_ylabel('actual ' + label)
+        ax_arr[0,i].set_ylabel('actual ' + label)
 
+        if actual['integrated_source'].ndim > 1:
+            for j in range(actual['integrated_source'].shape[1]):
+                ax_arr[1,i].plot(wave, other[k][:,j])
+        else:
             ax_arr[1,i].plot(wave, other[k])
-            ax_arr[1,i].set_ylabel('other ' + label)
+        ax_arr[1,i].set_ylabel('other ' + label)
 
+        if actual['integrated_source'].ndim > 1:
+            for j in range(actual['integrated_source'].shape[1]):
+                ax_arr[2,i].plot(wave, rel_err(k, idx = (slice(None), j)))
+        else:
             ax_arr[2,i].plot(wave, rel_err(k))
-            ax_arr[2,i].set_ylabel('reldiff ' + label)
+        ax_arr[2,i].set_ylabel('reldiff ' + label)
+
+        if actual['integrated_source'].ndim > 1:
+            for j in range(actual['integrated_source'].shape[1]):
+                ax_arr[3,i].plot(wave, abs_err(k, idx = (slice(None), j)))
+        else:
+            ax_arr[3,i].plot(wave, abs_err(k))
+        ax_arr[3,i].set_ylabel('absdiff ' + label)
+
     for ax in ax_arr[-1,:]:
         ax.set_xlabel('wavelength (nm)')
-        ax.set_ylabel('reldiff')
     fig.tight_layout()
     plt.show()

@@ -13,10 +13,7 @@ from gasimage.generate_image import (
     fetch_grid_and_spatial_props
 )
 from gasimage.ray_collection import ConcreteRayList
-from gasimage._ray_intersections_cy import (
-    ray_box_intersections,
-    traverse_grid
-)
+from gasimage.ray_traversal import ray_box_intersections, traverse_grid
 
 def coerce_unyt_to_npy(arr, units, equivalence = None,
                        passthru_dimensionless = False,
