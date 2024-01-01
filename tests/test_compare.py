@@ -164,17 +164,17 @@ def _test_compare_full_noscatter_rt(indata_dir, aligned_rays):
         # -> it's worth noting that the discrepancies seem largest furthest away
         #    from the line-center, which is actually comforting...
         start, vec = _get_ray_start_vec(ds)
-        if True: # highlight problematic case!
+        if False: # highlight problematic case!
             #start = np.array([start])
             vec = vec[4:6, :]
             print(vec)
         rtol_intensity, atol_intensity = 1.e-6, 1.e-6
-        rtol_tau, atol_tau = 0.0, 0.0
+        rtol_tau, atol_tau = 1e-5, 1.4e-5
         case_name = 'perspective-rays'
     else:
         start, vec = _get_ray_start_vec2(ds)
         rtol_intensity, atol_intensity = 3e-9, 0.0
-        rtol_tau, atol_tau = 2e-10, 0.0
+        rtol_tau, atol_tau = 2e-10, .0
         case_name = 'aligned-rays'
 
     if start.size < vec.size:
@@ -187,15 +187,15 @@ def _test_compare_full_noscatter_rt(indata_dir, aligned_rays):
     )
 
     actual_rslt = generate_image(accum_strat, ray_collection, ds)
-
-    alt_rslt = _dumber_full_noscatter_rt(accum_strat, ray_collection, ds)
+    alt_rslt = _dumber_full_noscatter_rt(accum_strat, ray_collection, ds,
+                                         ray_values_kind = 'yt')
 
     debug = False
 
-    if debug  and aligned_rays:
+    if debug:
         plot_rel_err(obs_freq, actual_rslt, alt_rslt)
-    elif debug:
-        calc_rdiff = lambda k: (actual_rslt[k] - alt_rslt[k]) / actual_rslt[k]
+    elif False:
+        calc_rdiff = lambda k: (actual_rslt[k] - alt_rslt[k]) / alt_rslt[k]
         calc_adiff = lambda k: (actual_rslt[k] - alt_rslt[k])
 
         start = ray_collection.ray_start_codeLen
@@ -247,7 +247,8 @@ def _test_compare_full_noscatter_rt(indata_dir, aligned_rays):
                    f"using {case_name} rays")
     )
 
-def _dumber_full_noscatter_rt(accum_strat, concrete_ray_list, ds):
+def _dumber_full_noscatter_rt(accum_strat, concrete_ray_list, ds,
+                              ray_values_kind = 'yt'):
     # this is basically a dumbed down implementation of the noscatter rt
     # -> here, accum_strat is mostly just a way to encode information
 
@@ -270,7 +271,7 @@ def _dumber_full_noscatter_rt(accum_strat, concrete_ray_list, ds):
               ('gas', 'velocity_y'), ('gas', 'velocity_z')]
     itr = ray_values(ds, ray_start = start, ray_vec = vec,
                      fields = fields, find_indices = True,
-                     kind = 'yt')#'gasimage')
+                     kind = ray_values_kind)
     t1 = datetime.datetime.now()
     for i, ray_data in enumerate(itr):
         if i == 0:
@@ -283,16 +284,11 @@ def _dumber_full_noscatter_rt(accum_strat, concrete_ray_list, ds):
                 uvec[1] * ray_data['gas','velocity_y'] +
                 uvec[2] * ray_data['gas','velocity_z']).to('cm/s')
 
-        if False: # this is the older "legacy" behavior (it's wrong!)
-            doppler_parameter_b = np.sqrt(
-                2.0 * unyt.kboltz_cgs * ray_data['gas','temperature'] /
-                (ray_data['gas','mean_molecular_weight'] * unyt.mh_cgs)
-            ).to('cm/s')
-        else:
-            doppler_parameter_b = np.sqrt(
-                2.0 * unyt.kboltz_cgs * ray_data['gas','temperature'] /
-                (accum_strat.species_mass_g * unyt.g)
-            ).to('cm/s')
+
+        doppler_parameter_b = np.sqrt(
+            2.0 * unyt.kboltz_cgs * ray_data['gas','temperature'] /
+            (accum_strat.species_mass_g * unyt.g)
+        ).to('cm/s')
 
         if True:
             tmp = _generate_noscatter_spectrum_cy(
@@ -328,5 +324,5 @@ def _dumber_full_noscatter_rt(accum_strat, concrete_ray_list, ds):
 def test_compare_full_noscatter_rt_alignedrays(indata_dir):
     _test_compare_full_noscatter_rt(indata_dir, aligned_rays = True)
 
-#def test_compare_full_noscatter_rt_perspectiverays(indata_dir):
-#    _test_compare_full_noscatter_rt(indata_dir, aligned_rays = False)
+def test_compare_full_noscatter_rt_perspectiverays(indata_dir):
+    _test_compare_full_noscatter_rt(indata_dir, aligned_rays = False)

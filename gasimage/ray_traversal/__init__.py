@@ -6,4 +6,5 @@ from ._ray_intersections_cy import (
 
 from ._yt_grid_traversal_cy import traverse_grid as _new_traverse_grid
 
-traverse_grid = _legacy_traverse_grid
+#traverse_grid = _legacy_traverse_grid
+traverse_grid = _new_traverse_grid
