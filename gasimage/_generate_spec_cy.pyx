@@ -825,17 +825,32 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
     _vlos_npy = np.empty(shape = (max_num,), dtype = 'f8')
     cdef double[::1] vlos = _vlos_npy
 
+    # load in the grid number-density data and prepare the buffer that will be
+    # used to hold the number-density data along the ray
     _ndens_grid = grid[ndens_field]
     cdef const double[:,:,::1] ndens_grid = _ndens_grid.ndview
     cdef double ndens_to_invcc = float(_ndens_grid.uq.to('cm**-3').v)
     _ndens_npy = np.empty(shape = (max_num,), dtype = 'f8')
     cdef double[::1] ndens = _ndens_npy
 
+    # load in the grid kinetic-T data and prepare the buffer that will be
+    # used to hold the kinetic-T data along the ray
     _kinetic_T_grid = grid['gas','temperature']
     cdef const double[:,:,::1] kinetic_T_grid = _kinetic_T_grid.ndview
     cdef double kinetic_T_to_K = float(_kinetic_T_grid.uq.to('K').v)
     _kinetic_T_npy = np.empty(shape = (max_num,), dtype = 'f8')
     cdef double[::1] kinetic_T_view = _kinetic_T_npy
+
+    # prepare the DopplerParameter-calculator
+    cdef DopplerParameterFromTemperature doppler_parameter_b = \
+        <DopplerParameterFromTemperature?> \
+        _construct_Doppler_Parameter_Approach(
+            grid, approach = 'normal',
+            particle_mass_in_grams = particle_mass_g)
+    # prepare the 1d buffer used to hold the doppler parameter data along the
+    # ray
+    _cur_doppler_parameter_b_npy = np.empty(shape = (max_num,), dtype = 'f8')
+    cdef double[::1] cur_doppler_parameter_b = _cur_doppler_parameter_b_npy
 
     try:
 
@@ -856,6 +871,10 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
             # convert dz to cm to avoid problems later (but DON'T convert
             # it into a unyt_array)
             dz = dz * spatial_grid_props.cm_per_length_unit
+
+            doppler_parameter_b.get_vals_cm_per_s(
+                idx3Darr = idx3D_view, out = cur_doppler_parameter_b
+            )
 
             cur_uvec_view = ray_uvec
             num_cells = dz.size
@@ -878,10 +897,10 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
                                          kinetic_T_to_K)
 
             #TODO: use particle_mass_g to compute the doppler parameter
-            cur_doppler_parameter_b = _calc_doppler_parameter_b(
-                grid, idx3Darr=tmp_idx, approach = 'normal',
-                particle_mass_in_grams = particle_mass_g
-            ).to('cm/s').ndview
+            #cur_doppler_parameter_b = _calc_doppler_parameter_b(
+            #    grid, idx3Darr=tmp_idx, approach = 'normal',
+            #    particle_mass_in_grams = particle_mass_g
+            #    #).to('cm/s').ndview
 
             tmp = _generate_noscatter_spectrum_cy(
                 line_props = line_props, obs_freq = obs_freq_Hz,
