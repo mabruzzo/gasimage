@@ -792,18 +792,50 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
                                     full_ray_start, full_ray_uvec,
                                     obs_freq, line_props, partition_func,
                                     particle_mass_g, ndens_field):
-    nrays = full_ray_uvec.shape[0]
-
-    vx_vals = grid['gas', 'velocity_x']
-    vy_vals = grid['gas', 'velocity_y']
-    vz_vals = grid['gas', 'velocity_z']
 
     out_l = []
+
+    # load in velocity information:
+    tmp_vx = grid['gas', 'velocity_x']
+    tmp_vy = grid['gas', 'velocity_y']
+    tmp_vz = grid['gas', 'velocity_z']
+    assert ((tmp_vx.units == tmp_vy.units) and (tmp_vx.units == tmp_vx.units))
+    # compute the factor that must be multiplied by velocity to convert to cm/s
+    cdef double vel_to_cm_per_s_factor = float(tmp_vx.uq.to('cm/s').v)
+    # now, get versions of velocity components without units
+    cdef double[:,:,::1] vx = tmp_vx.ndview
+    cdef double[:,:,::1] vy = tmp_vy.ndview
+    cdef double[:,:,::1] vz = tmp_vz.ndview
+
+    cdef Py_ssize_t nrays = full_ray_uvec.shape[0]
+    cdef Py_ssize_t i, j
+    cdef Py_ssize_t num_cells
+
+    # declaring types used by the nested loop:
+    cdef long i0, i1, i2
+    cdef const double[::1] cur_uvec_view
+    cdef long[:,:] idx3D_view
 
     check_consistent_arg_dims(obs_freq, unyt.dimensions.frequency, 'obs_freq')
     assert obs_freq.ndim == 1
     assert str(obs_freq.units) == 'Hz'
     cdef const double[::1] obs_freq_Hz = obs_freq.ndview
+
+    cdef long max_num = max_num_intersections(spatial_grid_props.grid_shape)
+    _vlos_npy = np.empty(shape = (max_num,), dtype = 'f8')
+    cdef double[::1] vlos = _vlos_npy
+
+    _ndens_grid = grid[ndens_field]
+    cdef const double[:,:,::1] ndens_grid = _ndens_grid.ndview
+    cdef double ndens_to_invcc = float(_ndens_grid.uq.to('cm**-3').v)
+    _ndens_npy = np.empty(shape = (max_num,), dtype = 'f8')
+    cdef double[::1] ndens = _ndens_npy
+
+    _kinetic_T_grid = grid['gas','temperature']
+    cdef const double[:,:,::1] kinetic_T_grid = _kinetic_T_grid.ndview
+    cdef double kinetic_T_to_K = float(_kinetic_T_grid.uq.to('K').v)
+    _kinetic_T_npy = np.empty(shape = (max_num,), dtype = 'f8')
+    cdef double[::1] kinetic_T_view = _kinetic_T_npy
 
     try:
 
@@ -819,19 +851,31 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
                 grid_shape = spatial_grid_props.grid_shape
             )
 
-            idx = (tmp_idx[0], tmp_idx[1], tmp_idx[2])
+            idx3D_view = tmp_idx
 
             # convert dz to cm to avoid problems later (but DON'T convert
             # it into a unyt_array)
             dz = dz * spatial_grid_props.cm_per_length_unit
 
-            # compute the velocity component. We should probably confirm
-            # correctness of the velocity sign
-            vlos = (ray_uvec[0] * vx_vals[idx] +
-                    ray_uvec[1] * vy_vals[idx] +
-                    ray_uvec[2] * vz_vals[idx]).to('cm/s').ndview
+            cur_uvec_view = ray_uvec
+            num_cells = dz.size
+            if True:
+                for j in range(num_cells):
+                    i0 = idx3D_view[0,j]
+                    i1 = idx3D_view[1,j]
+                    i2 = idx3D_view[2,j]
 
-            kinetic_T = grid['gas','temperature'][idx].to('K').ndview
+                    # should probably confirm correctness of velocity sign
+                    vlos[j] = (
+                        cur_uvec_view[0] * vx[i0,i1,i2] +
+                        cur_uvec_view[1] * vy[i0,i1,i2] +
+                        cur_uvec_view[2] * vz[i0,i1,i2]
+                    ) * vel_to_cm_per_s_factor
+
+                    ndens[j] = ndens_grid[i0,i1,i2] * ndens_to_invcc
+
+                    kinetic_T_view[j] = (kinetic_T_grid[i0,i1,i2] *
+                                         kinetic_T_to_K)
 
             #TODO: use particle_mass_g to compute the doppler parameter
             cur_doppler_parameter_b = _calc_doppler_parameter_b(
@@ -839,10 +883,11 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
                 particle_mass_in_grams = particle_mass_g
             ).to('cm/s').ndview
 
-            ndens = grid[ndens_field][idx].to('cm**-3').ndview
             tmp = _generate_noscatter_spectrum_cy(
                 line_props = line_props, obs_freq = obs_freq_Hz,
-                vLOS = vlos, ndens = ndens, kinetic_T = kinetic_T,
+                vLOS = vlos, ndens = ndens,
+                # our choice to pass a numpy array to kinetic_T is deliberate
+                kinetic_T = _kinetic_T_npy[:num_cells],
                 doppler_parameter_b = cur_doppler_parameter_b,
                 dz = dz,
                 level_pops_arg = partition_func
