@@ -3,57 +3,32 @@ import numpy as np
 import unyt
 
 @dataclasses.dataclass(frozen = True)
-class SpinFlipProperties:
-    """Encodes data about the spin-flip transition
-    """
-
-    freq_Hz: float # the rest-frame frequency for the transition
-    A10_Hz: float  # Einstein coeficient for spontaneous emission
-    g0: int # statistical weight of state with total-spin = 0
-    g1: int # statistical weight of state with total-spin = 1
-
-    # to support natural-broadening we would need other quantities (like
-    # oscillator strength...)
-
-    def __post_init__(self):
-        assert (self.g0 == 1) and (self.g1 == 3) # not up for debate
-        assert 0 < self.freq_Hz < float('inf')
-        assert 0 < self.A10_Hz < float('inf')
-
-    @property
-    def freq_quantity(self):
-        return unyt.unyt_quantity(self.freq_Hz, "Hz")
-
-    @property
-    def A_quantity(self):
-        return unyt.unyt_quantity(self.A10_Hz, "Hz")
-
-    @property
-    def g_lo(self): return self.g0
-
-    @property
-    def g_hi(self): return self.g1
-
-    @property
-    def A_Hz(self): return self.A10_Hz
-
-    @property
-    def energy_lo_quantity(self):
-        return unyt.unyt_quantity(0.0, 'erg')
-
-# ToDo: maybe do a better job unifying with the LineProperties and
-#       SpinFlipProperties class
-
-@dataclasses.dataclass(frozen = True)
 class LineProperties:
-    """Encodes data about a line-transition
+    """
+    Encodes data about a line-transition
+
+    Notes
+    -----
+    - to support natural-broadening we would need other quantities (like
+      oscillator strength)
+    - if we ever want to support multiple lines in a single calculation, we
+      may want to consider somehow making these instances lighter weight!
+    - to make things more self documenting, we may want to track cases where
+      we are looking at hyperfine transitions between levels
     """
 
     freq_Hz: float # the rest-frame frequency for the transition
-    A_Hz: float  # Einstein coeficient for spontaneous emission
+    A_Hz: float  # Einstein coefficient for spontaneous emission
     g_lo: int
     g_hi: int
     energy_lo_erg: float # sometimes called the excitation potential
+
+    def __post_init__(self):
+        assert 0 < self.freq_Hz < float('inf')
+        assert 0 < self.A_Hz < float('inf')
+        assert (0 < self.g_lo) and isinstance(self.g_lo, int)
+        assert (0 < self.g_hi) and isinstance(self.g_hi, int)
+        assert 0 <= self.energy_lo_erg < float('inf')
 
     @property
     def A_quantity(self):
@@ -89,11 +64,23 @@ def B_stim_emission_coef(lineprop):
 
 
 def default_spin_flip_props():
-    return SpinFlipProperties(
+    # note for the future: the
+    # -> following linked paper notes that the natural width of the 21 cm line
+    #    is negligibly small
+    #        https://ui.adsabs.harvard.edu/abs/2019MNRAS.483..593K
+    # -> the wikipedia page on the 21cm line (aka H line) elaborates on this a
+    #    little.
+    #    -> Apparently, the uncertainty principle links lifetime with the
+    #       uncertainty of the energy level (the uncertainty in the energy
+    #       level is linked to the natural width).
+    #    -> Because the transition has such a long lifetime the spectral line
+    #       has an extremely small natural width
+    return LineProperties(
         freq_Hz = 1.4204058E+09, # not sure where this is from
-        A10_Hz = 2.85e-15,       # mentioned in Liszt (2001) A&A 371, 698-707
-        g0 = 1,
-        g1 = 3
+        A_Hz = 2.85e-15,       # mentioned in Liszt (2001) A&A 371, 698-707
+        g_lo = 1, # statistical weight of state with total-spin = 0
+        g_hi = 3, # statistical weight of state with total-spin = 1
+        energy_lo_erg = 0.0
     )
 
 def air_to_vacuum(air_wavelength):
