@@ -220,7 +220,7 @@ def _test_generate_ray_spectrum(nfreq = 201, ngas = 100, zero_vlos = False,
                                    dtype = '=f8') )
             if fn == _generate_ray_spectrum_py:
                 my_kwargs = dict(
-                    A10 = default_spin_flip_props().A10_quantity,
+                    A10 = default_spin_flip_props().A_quantity,
                     rest_freq = default_spin_flip_props().freq_quantity,
                     only_spontaneous_emission = True,
                     level_pops_from_stat_weights = True,
@@ -231,7 +231,7 @@ def _test_generate_ray_spectrum(nfreq = 201, ngas = 100, zero_vlos = False,
                     ( (k,arr.ndarray_view()) for k,arr in kwargs.items() )
                 )
                 my_kwargs['A10_Hz'] = float(
-                    default_spin_flip_props().A10_quantity.to('Hz').v)
+                    default_spin_flip_props().A_quantity.to('Hz').v)
                 my_kwargs['rest_freq'] = float(
                     default_spin_flip_props().freq_quantity.to('Hz').v)
             t1 = datetime.datetime.now()

@@ -527,7 +527,7 @@ def _generate_ray_spectrum(object spatial_grid_props,
                            double[:,::1] out):
 
     spin_flip_props = default_spin_flip_props()
-    cdef double _A10_Hz = float(spin_flip_props.A10_quantity.to('Hz').v)
+    cdef double _A10_Hz = float(spin_flip_props.A_quantity.to('Hz').v)
     cdef double _rest_freq_Hz = float(spin_flip_props.freq_quantity.to('Hz').v)
 
     cdef Py_ssize_t nrays = full_ray_uvec.shape[0]

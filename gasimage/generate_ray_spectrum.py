@@ -267,7 +267,7 @@ def generate_ray_spectrum_legacy(grid, spatial_grid_props,
                 doppler_parameter_b = cur_doppler_parameter_b,
                 rest_freq = spin_flip_props.freq_quantity,
                 dz = dz,
-                A10 = spin_flip_props.A10_quantity,
+                A10 = spin_flip_props.A_quantity,
                 only_spontaneous_emission = True,
                 level_pops_from_stat_weights = True,
                 ignore_natural_broadening = True)

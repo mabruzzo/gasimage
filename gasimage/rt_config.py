@@ -21,16 +21,12 @@ class SpinFlipProperties:
         assert 0 < self.A10_Hz < float('inf')
 
     @property
-    def A10_quantity(self):
-        return unyt.unyt_quantity(self.A10_Hz, "Hz")
-
-    @property
     def freq_quantity(self):
         return unyt.unyt_quantity(self.freq_Hz, "Hz")
 
     @property
     def A_quantity(self):
-        return self.A10_quantity
+        return unyt.unyt_quantity(self.A10_Hz, "Hz")
 
     @property
     def g_lo(self): return self.g0
@@ -40,6 +36,10 @@ class SpinFlipProperties:
 
     @property
     def A_Hz(self): return self.A10_Hz
+
+    @property
+    def energy_lo_quantity(self):
+        return unyt.unyt_quantity(0.0, 'erg')
 
 # ToDo: maybe do a better job unifying with the LineProperties and
 #       SpinFlipProperties class
