@@ -793,7 +793,14 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
                                     obs_freq, line_props, partition_func,
                                     particle_mass_g, ndens_field):
 
-    out_l = []
+    cdef list out_l = []
+
+    check_consistent_arg_dims(obs_freq, unyt.dimensions.frequency, 'obs_freq')
+    assert obs_freq.ndim == 1
+    assert str(obs_freq.units) == 'Hz'
+    cdef const double[::1] obs_freq_Hz = obs_freq.ndview
+
+    cdef long max_num = max_num_intersections(spatial_grid_props.grid_shape)
 
     # load in velocity information:
     tmp_vx = grid['gas', 'velocity_x']
@@ -806,22 +813,7 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
     cdef double[:,:,::1] vx = tmp_vx.ndview
     cdef double[:,:,::1] vy = tmp_vy.ndview
     cdef double[:,:,::1] vz = tmp_vz.ndview
-
-    cdef Py_ssize_t nrays = full_ray_uvec.shape[0]
-    cdef Py_ssize_t i, j
-    cdef Py_ssize_t num_cells
-
-    # declaring types used by the nested loop:
-    cdef long i0, i1, i2
-    cdef const double[::1] cur_uvec_view
-    cdef long[:,:] idx3D_view
-
-    check_consistent_arg_dims(obs_freq, unyt.dimensions.frequency, 'obs_freq')
-    assert obs_freq.ndim == 1
-    assert str(obs_freq.units) == 'Hz'
-    cdef const double[::1] obs_freq_Hz = obs_freq.ndview
-
-    cdef long max_num = max_num_intersections(spatial_grid_props.grid_shape)
+    # prepare the buffer used to hold the LOS velocity data along the ray
     _vlos_npy = np.empty(shape = (max_num,), dtype = 'f8')
     cdef double[::1] vlos = _vlos_npy
 
@@ -852,6 +844,16 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
     _cur_doppler_parameter_b_npy = np.empty(shape = (max_num,), dtype = 'f8')
     cdef double[::1] cur_doppler_parameter_b = _cur_doppler_parameter_b_npy
 
+
+    cdef Py_ssize_t nrays = full_ray_uvec.shape[0]
+    cdef Py_ssize_t i, j
+    cdef Py_ssize_t num_cells
+
+    # declaring types used by the nested loop:
+    cdef long i0, i1, i2
+    cdef const double[::1] cur_uvec_view
+    cdef long[:,:] idx3D_view
+
     try:
 
         for i in range(nrays):
@@ -876,9 +878,10 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
                 idx3Darr = idx3D_view, out = cur_doppler_parameter_b
             )
 
+            # copy grid data along the ray into 1d buffers!
             cur_uvec_view = ray_uvec
             num_cells = dz.size
-            if True:
+            with cython.wraparound(False):
                 for j in range(num_cells):
                     i0 = idx3D_view[0,j]
                     i1 = idx3D_view[1,j]
@@ -895,12 +898,6 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
 
                     kinetic_T_view[j] = (kinetic_T_grid[i0,i1,i2] *
                                          kinetic_T_to_K)
-
-            #TODO: use particle_mass_g to compute the doppler parameter
-            #cur_doppler_parameter_b = _calc_doppler_parameter_b(
-            #    grid, idx3Darr=tmp_idx, approach = 'normal',
-            #    particle_mass_in_grams = particle_mass_g
-            #    #).to('cm/s').ndview
 
             tmp = _generate_noscatter_spectrum_cy(
                 line_props = line_props, obs_freq = obs_freq_Hz,
