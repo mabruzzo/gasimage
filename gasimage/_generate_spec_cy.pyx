@@ -8,30 +8,22 @@ from libc.math cimport exp as exp_f64
 from libc.math cimport sqrt as sqrt_f64
 from cpython.mem cimport PyMem_Malloc, PyMem_Free
 
-# TODO: use the following instead of DEF
-#cdef extern from *:
-#    """
-#    #define INV_SQRT_PI 0.5641895835477563
-#    #define QUARTER_DIV_PI 0.07957747154594767
-#    // define some Macros equal to some yt-constants
-#    // yt.units.c_cgs =
-#    #define C_CGS 29979245800.0
-#    // yt.units.h_cgs =
-#    #define H_CGS 6.62606957e-27
-#    """
-#    double INV_SQRT_PI_
-#    double QUARTER_DIV_PI
-#    double C_CGS
-#    double H_CGS
-
-DEF _INV_SQRT_PI = 0.5641895835477563
-DEF _QUARTER_DIV_PI = 0.07957747154594767
-
-# define some CONSTANTS equal to some yt constants
-# yt.units.c_cgs =
-DEF _C_CGS = 29979245800.0
-# = yt.units.h_cgs
-DEF _H_CGS = 6.62606957e-27
+cdef extern from *:
+    """
+    #define INV_SQRT_PI 0.5641895835477563
+    #define QUARTER_DIV_PI 0.07957747154594767
+    // define some Macros equal to some yt-constants
+    #define C_CGS 29979245800.0            /* yt.units.c_cgs */
+    #define HPLANCK_CGS 6.62606957e-27     /* yt.units.h_cgs */
+    #define MH_CGS 1.6737352238051868e-24  /* yt.units.mh_cgs */
+    #define KBOLTZ_CGS 1.3806488e-16       /* yt.units.kboltz_cgs */
+    """
+    double INV_SQRT_PI
+    double QUARTER_DIV_PI
+    double C_CGS
+    double HPLANCK_CGS
+    double MH_CGS
+    double KBOLTZ_CGS
 
 # When considering a transition we construct a new LineProfileStruct for each
 # gas element.
@@ -66,13 +58,13 @@ cdef inline LineProfileStruct prep_LineProfHelper(double rest_freq,
     #    the standard deviation of the los VELOCITY profile times sqrt(2)
     # -> the quantity Rybicki and Lightman call the "Doppler width" is the
     #    standard-deviation of the FREQUENCY profile times sqrt(2)
-    cdef double temp = _C_CGS / (rest_freq * doppler_parameter_b)
+    cdef double temp = C_CGS / (rest_freq * doppler_parameter_b)
 
     # now fill in the LineProfileStruct
     cdef LineProfileStruct out
-    out.norm = _INV_SQRT_PI * temp
+    out.norm = INV_SQRT_PI * temp
     out.neg_half_div_sigma2 = -1.0 * temp * temp
-    out.emit_freq_factor = 1.0 / (1.0 + velocity_offset/_C_CGS)
+    out.emit_freq_factor = 1.0 / (1.0 + velocity_offset/C_CGS)
     return out
 
 cdef inline double eval_line_profile(double obs_freq, double rest_freq,
@@ -260,7 +252,8 @@ cpdef _generate_ray_spectrum_cy(const double[::1] obs_freq,
         for j in range(num_obs_freq): # iterate over oberved frequencies
             profile_val = eval_line_profile(obs_freq[j], rest_freq, prof)
             cur_jnu = (
-                _H_CGS * rest_freq * n1* A10_Hz * profile_val * _QUARTER_DIV_PI
+                HPLANCK_CGS * rest_freq * n1* A10_Hz * profile_val *
+                QUARTER_DIV_PI
             )
             out[j] += cur_jnu * cur_dz
 
@@ -307,11 +300,6 @@ cdef class ScalarDopplerParameter:
                                            #       than is required
             out[i] = self.doppler_parameter_b_cm_per_s
 
-# = yt.units.mh_cgs
-DEF _MH_CGS = 1.6737352238051868e-24
-# = yt.units.kboltz_cgs
-DEF _KBOLTZ_CGS = 1.3806488e-16
-
 cdef class DopplerParameterFromTemperature:
     cdef double[:,:,::1] temperature_arr
     cdef double inv_particle_mass_cgs
@@ -344,7 +332,7 @@ cdef class DopplerParameterFromTemperature:
             i1 = idx3Darr[1,i]
             i2 = idx3Darr[2,i]
 
-            out[i] = sqrt_f64(2.0 * _KBOLTZ_CGS *
+            out[i] = sqrt_f64(2.0 * KBOLTZ_CGS *
                               self.internal_to_Kelvin_factor *
                               self.temperature_arr[i0,i1,i2] *
                               self.inv_particle_mass_cgs)
@@ -385,10 +373,10 @@ cdef class DopplerParameterFromTemperatureMMW:
             i1 = idx3Darr[1,i]
             i2 = idx3Darr[2,i]
 
-            out[i] = sqrt_f64(2.0 * _KBOLTZ_CGS *
+            out[i] = sqrt_f64(2.0 * KBOLTZ_CGS *
                               self.internal_to_Kelvin_factor *
                               self.temperature_arr[i0,i1,i2] /
-                              (self.mmw_arr[i0,i1,i2] * _MH_CGS))
+                              (self.mmw_arr[i0,i1,i2] * MH_CGS))
 
 ctypedef fused FusedDopplerParameterType:
     ScalarDopplerParameter
@@ -498,7 +486,7 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     # -> consequently, we ALWAY specify that the particle mass is that of a
     #    Hydrogen atom!
     doppler_parameter_b = _construct_Doppler_Parameter_Approach(
-        grid, approach = doppler_parameter_b, particle_mass_in_grams = _MH_CGS
+        grid, approach = doppler_parameter_b, particle_mass_in_grams = MH_CGS
     )
 
     return _generate_ray_spectrum(
@@ -917,11 +905,11 @@ cdef void ndens_and_ratio_from_partition(double[::1] ndens_1,
                                          const double energy_1_erg,
                                          const double rest_freq_Hz,
                                          const Py_ssize_t num_segments):
-    cdef double restframe_energy_photon_erg = rest_freq_Hz * _H_CGS
+    cdef double restframe_energy_photon_erg = rest_freq_Hz * HPLANCK_CGS
     cdef double beta_cgs
     for pos_i in range(num_segments):
         # thermodynamic beta
-        beta_cgs = 1.0 / (kinetic_T[pos_i] * _KBOLTZ_CGS)
+        beta_cgs = 1.0 / (kinetic_T[pos_i] * KBOLTZ_CGS)
 
         ndens_1[pos_i] = (
             ndens_ion_species[pos_i] * g_1 * exp_f64(-energy_1_erg * beta_cgs)
@@ -1080,8 +1068,8 @@ def _generate_noscatter_spectrum_cy(object line_props,
         raise RuntimeError("Problem with initializing the accumulator!")
 
     cdef double rest_freq3 = rest_freq_Hz*rest_freq_Hz*rest_freq_Hz
-    cdef double source_func_numerator = (2*_H_CGS * rest_freq3 /
-                                         (_C_CGS * _C_CGS))
+    cdef double source_func_numerator = (2*HPLANCK_CGS * rest_freq3 /
+                                         (C_CGS * C_CGS))
 
     # temproray variables used within the loop:
     cdef LineProfileStruct prof
@@ -1101,7 +1089,7 @@ def _generate_noscatter_spectrum_cy(object line_props,
         # first compute alpha at the line-center (ignoring broadening profile)
         # & then compute alpha as a function of frequency:
         stim_emission_correction = (1.0 - n2g1_div_n1g2[pos_i])
-        alpha_center = (_H_CGS * rest_freq_Hz * ndens_1[pos_i] * B12_cgs *
+        alpha_center = (HPLANCK_CGS * rest_freq_Hz * ndens_1[pos_i] * B12_cgs *
                         stim_emission_correction) / (4*np.pi)
 
         # construct the profile for the current gas-element
