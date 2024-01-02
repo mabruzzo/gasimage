@@ -78,7 +78,7 @@ def fetch_grid_and_spatial_props(ds, grid_index, cm_per_length_unit,
     assert (np.array(grid.shape) ==
             ds.index.grid_dimensions[grid_index]).all()
 
-    spatial_props = SpatialGridProps(
+    spatial_props = SpatialGridProps.build_from_unyt_arrays(
         cm_per_length_unit = cm_per_length_unit,
         grid_shape = ds.index.grid_dimensions[grid_index],
         grid_left_edge = ds.index.grid_left_edge[grid_index],
@@ -214,7 +214,7 @@ def itr_traverse_top_level_grids(ds, ray_list, units,
     ray_uvec_l = ray_list.get_ray_uvec()
 
     # here, each "cell" is a subgrid
-    spatial_props = SpatialGridProps(
+    spatial_props = SpatialGridProps.build_from_unyt_arrays(
         cm_per_length_unit = float(ds.quan(1.0, units).to('cm').v),
         grid_shape = np.array(subgrid_array.shape),
         grid_left_edge = ds.domain_left_edge,
