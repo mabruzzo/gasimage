@@ -353,9 +353,7 @@ def max_num_intersections(grid_shape):
     # intersectable cells by a diagonal line)
     return np.sum(grid_shape)
 
-def traverse_grid(line_uvec, line_start,
-                  grid_left_edge, cell_width,
-                  grid_shape):
+def traverse_grid(line_uvec, line_start, spatial_props):
     """
     Computes the grid indices that the ray intersects and computes
     the distance of the ray in each cell.
@@ -382,6 +380,10 @@ def traverse_grid(line_uvec, line_start,
     In the future, consider encoding the cell indices as a 1d index
     in indices.
     """
+
+    grid_left_edge = spatial_props.left_edge
+    cell_width = spatial_props.cell_width
+    grid_shape = spatial_props.grid_shape
 
     assert len(line_uvec) == 3
     assert not (line_uvec == 0).all()

@@ -231,9 +231,7 @@ def generate_ray_spectrum_legacy(grid, spatial_grid_props,
             tmp_idx, dz = traverse_grid(
                 line_uvec = ray_uvec,
                 line_start = ray_start,
-                grid_left_edge = grid_left_edge,
-                cell_width = cell_width,
-                grid_shape = grid_shape
+                spatial_props = spatial_grid_props
             )
 
             idx = (tmp_idx[0], tmp_idx[1], tmp_idx[2])

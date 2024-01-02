@@ -10,7 +10,6 @@ import unyt
 
 from gasimage._generate_spec_cy import _calc_doppler_parameter_b, NdensRatio
 from gasimage.generate_ray_spectrum import line_profile
-from gasimage.ray_traversal import traverse_grid
 
 def blackbody_intensity_cgs(freq_Hz, thermodynamic_beta_cgs):
     h_cgs = unyt.h_cgs.v

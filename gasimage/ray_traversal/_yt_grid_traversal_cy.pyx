@@ -220,15 +220,8 @@ cdef int walk_volume(VolumeContainer *vc,
 # from this point and below all of the code was written for this down here is
 # where the totally new code that I've written begins
 
-from ._ray_intersections_cy import (
-    max_num_intersections, ray_box_intersections
-)
-
-from .spatial_grid_props import (
-    InternalSpatialGridProps,
-    get_grid_center,
-    get_grid_width
-)
+from ._ray_intersections_cy import max_num_intersections
+from .spatial_grid_props import get_grid_center, get_grid_width
 
 def _get_ray_stop(line_uvec, line_start, spatial_props):
     """
@@ -270,7 +263,42 @@ cdef void sample_ray(flt64_t enter_t,flt64_t exit_t, int index[3], void *data):
     ptr.cell_count += 1
 
 
-def _traverse_grid(line_uvec, line_start, spatial_props):
+def traverse_grid(line_uvec, line_start, spatial_props):
+    """
+    Computes the grid indices that the ray intersects and computes
+    the distance of the ray in each cell.
+    
+    This should not be called for a ray that just clips the corner
+    
+    Parameters
+    ----------
+    line_uvec
+        Unit vector that runs parallel to the line
+    line_start
+        Location where the line enters the grid
+
+    Returns
+    -------
+    indices: (3,N) array
+        This is done to facillitate indexing of a numpy array
+    distances: (N,) array
+        The distance that a line travels through a given cell
+
+    Notes
+    -----
+    None of the arguments should be an instance of a yt.YTArray
+
+    I have some qualms about the back & forth between our representations of
+    rays.
+    - Sometimes, we represent them with their start points and end points
+    - Other times, we represent them with their start-points and unit vector
+    
+    Our conversion between these representations is a little concerning! We are
+    definitely losing precision each time we do this! It's also a little
+    concerning that the precision of the distances array returned by this
+    function directly depends on the length of the array (and consequently on 
+    the observer's distance!)
+    """
 
     assert len(line_uvec) == 3
     assert not (line_uvec == 0).all()
@@ -324,50 +352,3 @@ def _traverse_grid(line_uvec, line_start, spatial_props):
 
     return (np.ascontiguousarray(indices_arr[:ptracker.cell_count,:].T),
             distances)
-
-def traverse_grid(line_uvec, line_start, grid_left_edge, cell_width,
-                  grid_shape):
-    """
-    Computes the grid indices that the ray intersects and computes
-    the distance of the ray in each cell.
-    
-    This should not be called for a ray that just clips the corner
-    
-    Parameters
-    ----------
-    line_uvec
-        Unit vector that runs parallel to the line
-    line_start
-        Location where the line enters the grid
-
-    Returns
-    -------
-    indices: (3,N) array
-        This is done to facillitate indexing of a numpy array
-    distances: (N,) array
-        The distance that a line travels through a given cell
-
-    Notes
-    -----
-    None of the arguments should be an instance of a yt.YTArray
-
-    I have some qualms about the back & forth between our representations of
-    rays.
-    - Sometimes, we represent them with their start points and end points
-    - Other times, we represent them with their start-points and unit vector
-    
-    Our conversion between these representations is a little concerning! We are
-    definitely losing precision each time we do this! It's also a little
-    concerning that the precision of the distances array returned by this
-    function directly depends on the length of the array (and consequently on 
-    the observer's distance!)
-    """
-
-    # I think we need to kinda centralize the use of SpatialGridProps... (we
-    # can make it into an extension-type that wraps a similarly named struct &
-    # then we can have that struct replace the VolumeContainer that we
-    # inherited from yt)
-    spatial_props = InternalSpatialGridProps.build(grid_shape = grid_shape,
-                                                   left_edge = grid_left_edge,
-                                                   cell_width = cell_width)
-    return _traverse_grid(line_uvec, line_start, spatial_props)

@@ -208,19 +208,19 @@ def itr_traverse_top_level_grids(ds, ray_list, units,
         Array of the same length as subgrid_sequence. This provides the
         distance through each ray
     """
-    
+
     subgrid_array = _top_level_grid_indices(ds)
-    domain_left_edge = (
-        ds.domain_left_edge.to(units).v * rescale_length_factor
-    )
-    domain_right_edge = (
-        ds.domain_right_edge.to(units).v * rescale_length_factor
-    )
-    cell_width = ((domain_right_edge - domain_left_edge)/
-                  np.array(subgrid_array.shape))
-    subgrid_array_shape = subgrid_array.shape
 
     ray_uvec_l = ray_list.get_ray_uvec()
+
+    # here, each "cell" is a subgrid
+    spatial_props = SpatialGridProps(
+        cm_per_length_unit = float(ds.quan(1.0, units).to('cm').v),
+        grid_shape = np.array(subgrid_array.shape),
+        grid_left_edge = ds.domain_left_edge,
+        grid_right_edge = ds.domain_right_edge,
+        length_unit = units,
+        rescale_factor = rescale_length_factor)
 
     for ray_ind in range(len(ray_list)):
         ray_start = ray_list.ray_start_codeLen[ray_ind,:]
@@ -228,16 +228,15 @@ def itr_traverse_top_level_grids(ds, ray_list, units,
 
         intersect_dist = ray_box_intersections(
             line_start = ray_start, line_uvec = ray_uvec, 
-            left_edge = domain_left_edge, right_edge = domain_right_edge)
+            left_edge = spatial_props.left_edge,
+            right_edge = spatial_props.right_edge)
 
         if len(intersect_dist) < 2:
             subgrid_sequence,dists = np.array([]), np.array([])
         else:
             idx,dists = traverse_grid(line_uvec = ray_uvec,
                                       line_start = ray_start,
-                                      grid_left_edge = domain_left_edge,
-                                      cell_width = cell_width,
-                                      grid_shape = subgrid_array_shape)
+                                      spatial_props = spatial_props)
             subgrid_sequence = subgrid_array[idx[0],idx[1],idx[2]]
 
         yield subgrid_sequence, dists

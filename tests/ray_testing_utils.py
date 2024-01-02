@@ -116,10 +116,7 @@ def _gasimage_ray_values_startend(ds, start_end_pairs, fields,
 
             indices, dl = traverse_grid(
                 line_uvec = ray_uvec, line_start = ray_start,
-                grid_left_edge = spatial_grid_props.left_edge,
-                cell_width = spatial_grid_props.cell_width,
-                grid_shape = spatial_grid_props.grid_shape
-            )
+                spatial_props = spatial_grid_props)
 
             # note: dl is already a numpy array with units of 'code_length'
 

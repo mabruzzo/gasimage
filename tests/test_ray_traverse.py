@@ -3,6 +3,10 @@ import pytest
 import yt
 
 from gasimage.ray_traversal import traverse_grid
+from gasimage.ray_traversal.spatial_grid_props import (
+    SpatialGridProps,
+    alt_build_spatial_grid_props
+)
 
 from ray_testing_utils import ray_values_startend
 
@@ -13,26 +17,32 @@ from ray_testing_utils import ray_values_startend
 
 def test_traverse_grid():
 
+    spatial_props_1 = alt_build_spatial_grid_props(
+        cm_per_length_unit = 1.0,
+        grid_left_edge = np.array([-60, 0.0, -10.]),
+        cell_width = np.array([1.0,1.0,1.0]),
+        grid_shape = (120,20,20))
+
     idx, dists = traverse_grid(line_uvec = np.array([-1.0, 0.0, 0]), 
                                line_start = np.array([60, 0, 0.]),
-                               grid_left_edge = np.array([-60, 0.0, -10.]),
-                               cell_width = np.array([1.0,1.0,1.0]),
-                               grid_shape = (120,20,20))
+                               spatial_props = spatial_props_1)
     print(idx)
+
+    spatial_props_2 = alt_build_spatial_grid_props(
+        cm_per_length_unit = 1.0,
+        grid_left_edge = np.array([-60, -10., -10.]),
+        cell_width = np.array([1.0,1.0,1.0]),
+        grid_shape = (120,20,20))
 
     idx, dists = traverse_grid(line_uvec = np.array([-1.0/np.sqrt(2), 1.0/np.sqrt(2),0]), 
                                line_start = np.array([60, 0, 0.]),
-                               grid_left_edge = np.array([-60, -10, -10.]),
-                               cell_width = np.array([1.0,1.0,1.0]),
-                               grid_shape = (120,20,20))
+                               spatial_props = spatial_props_2)
     print(idx)
     print(dists)
 
     idx, dists = traverse_grid(line_uvec = np.array([-1.0/np.sqrt(2), -1.0/np.sqrt(2),0]), 
                                line_start = np.array([60, 0, 0.]),
-                               grid_left_edge = np.array([-60, -10, -10.]),
-                               cell_width = np.array([1.0,1.0,1.0]),
-                               grid_shape = (120,20,20))
+                               spatial_props = spatial_props_2)
     print(idx)
     print(dists)
 
@@ -48,18 +58,18 @@ def test_traverse_grid2():
         line_start = np.array([-5.3579909130206237e-16,
                                -1.7500526410557118e+00,
                                8.6469999999999985e+00])
-        grid_left_edge = np.array([-51.882,
-                                   -8.646999999999998,
-                                   -8.646999999999998])
-        cell_width = np.array([0.10808749999999999,
-                               0.10808749999999999,
-                               0.10808749999999999])
-        grid_shape = (960, 160, 160)
+        spatial_props = alt_build_spatial_grid_props(
+            cm_per_length_unit = 1.0,
+            grid_left_edge = np.array([-51.882,
+                                       -8.646999999999998,
+                                       -8.646999999999998]),
+            cell_width = np.array([0.10808749999999999,
+                                   0.10808749999999999,
+                                   0.10808749999999999]),
+            grid_shape = (960, 160, 160))
         idx, dists = traverse_grid(line_uvec = line_uvec,
                                    line_start = line_start,
-                                   grid_left_edge = grid_left_edge,
-                                   cell_width = cell_width,
-                                   grid_shape = grid_shape)
+                                   spatial_props = spatial_props)
         print(idx)
         print(dists)
 
@@ -70,14 +80,15 @@ def test_traverse_grid2():
         line_start = np.array([-22.499999999999996,
                                -9.915798031810596,
                                -6.277217808360678])
-        grid_left_edge = np.array([-30., -10., -10.])
-        cell_width = np.array([0.125, 0.125, 0.125])
-        grid_shape = (60, 40, 40)
+        spatial_props = alt_build_spatial_grid_props(
+            cm_per_length_unit = 1.0,
+            grid_left_edge = np.array([-30., -10., -10.]),
+            cell_width = np.array([0.125, 0.125, 0.125]),
+            grid_shape = (60, 40, 40))
+
         idx, dists = traverse_grid(line_uvec = line_uvec,
                                    line_start = line_start,
-                                   grid_left_edge = grid_left_edge,
-                                   cell_width = cell_width,
-                                   grid_shape = grid_shape)
+                                   spatial_props = spatial_props)
         print(idx)
 
 
@@ -92,15 +103,16 @@ def test_traverse_grid_small_truncation_probs():
                            1.43402336e+01])
     line_uvec = np.array([ 3.74939946e-32,  1.22464680e-16,
                            -1.00000000e+00])
-    grid_left_edge = np.array([-7.5, -5.,0. ])
-    grid_right_edge = np.array([0.0, 0.0, 5. ])
-    cell_width = np.array([0.125, 0.125, 0.125])
-    grid_shape = (60, 40, 40)
+    #grid_right_edge = np.array([0.0, 0.0, 5. ])
+    spatial_props = alt_build_spatial_grid_props(
+        cm_per_length_unit = 1.0,
+        grid_left_edge = np.array([-7.5, -5.,0. ]),
+        cell_width = np.array([0.125, 0.125, 0.125]),
+        grid_shape = (60, 40, 40))
     idx, dists = traverse_grid(line_uvec = line_uvec,
                                line_start = line_start,
                                grid_left_edge = grid_left_edge,
-                               cell_width = cell_width,
-                               grid_shape = grid_shape)
+                               spatial_props = spatial_props)
 
     expected_idx = np.array(
         [[59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59, 59,
@@ -124,6 +136,9 @@ def test_traverse_grid_small_truncation_probs():
 
 def traverse_grid_startend(start_end_pairs, grid_left_edge,
                            cell_width, grid_shape):
+    spatial_props = alt_build_spatial_grid_props(
+        cm_per_length_unit = 1.0, grid_left_edge = grid_left_edge,
+        cell_width = cell_width, grid_shape = grid_shape)
 
     out_pairs = []
 
@@ -132,13 +147,11 @@ def traverse_grid_startend(start_end_pairs, grid_left_edge,
         line_vec = (np.array(end) - np.array(start))
         assert (line_vec != 0).any()
         line_uvec = line_vec / np.linalg.norm(line_vec)
-    
+
         idx, dists = traverse_grid(
             line_uvec = line_uvec, 
             line_start = line_start,
-            grid_left_edge = grid_left_edge,
-            cell_width = cell_width,
-            grid_shape = grid_shape)
+            spatial_props = spatial_props)
 
         out_pairs.append((idx,dists))
     return out_pairs

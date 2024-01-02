@@ -464,12 +464,6 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     # do NOT use ``grid`` to access length-scale information. This will really
     # mess some things up related to rescale_length_factor
 
-    cm_per_length_unit = spatial_grid_props.cm_per_length_unit
-    grid_left_edge = spatial_grid_props.left_edge
-    grid_right_edge = spatial_grid_props.right_edge
-    cell_width = spatial_grid_props.cell_width
-    grid_shape = spatial_grid_props.grid_shape
-
     check_consistent_arg_dims(obs_freq, unyt.dimensions.frequency, 'obs_freq')
     assert obs_freq.ndim == 1
     assert str(obs_freq.units) == 'Hz'
@@ -508,10 +502,7 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     )
 
     return _generate_ray_spectrum(
-        grid_left_edge = grid_left_edge,
-        grid_right_edge = grid_right_edge,
-        cell_width = cell_width, grid_shape = grid_shape,
-        cm_per_length_unit = cm_per_length_unit,
+        spatial_grid_props = spatial_grid_props,
         full_ray_start = full_ray_start, full_ray_uvec = full_ray_uvec,
         rest_freq = rest_freq,
         obs_freq_Hz = _obs_freq_Hz_view,
@@ -523,9 +514,7 @@ def generate_ray_spectrum(grid, spatial_grid_props,
         out = out)
 
 
-def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
-                           object cell_width, object grid_shape,
-                           object cm_per_length_unit,
+def _generate_ray_spectrum(object spatial_grid_props,
                            object full_ray_start, object full_ray_uvec,
                            object rest_freq,
                            double[::1] obs_freq_Hz,
@@ -549,7 +538,7 @@ def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
     cdef const double[::1] cur_uvec_view
     cdef long[:,:] idx3D_view
 
-    cdef long max_num = max_num_intersections(grid_shape)
+    cdef long max_num = max_num_intersections(spatial_grid_props.grid_shape)
     _vlos_npy = np.empty(shape = (max_num,), dtype = 'f8')
     cdef double[::1] vlos = _vlos_npy
     _ndens_HI_n1state_npy = np.empty(shape = (max_num,), dtype = 'f8')
@@ -557,7 +546,8 @@ def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
 
     _cur_doppler_parameter_b_npy = np.empty(shape = (max_num,), dtype = 'f8')
     cdef double[::1] cur_doppler_parameter_b = _cur_doppler_parameter_b_npy
-    
+
+    cdef double cm_per_length_unit = spatial_grid_props.cm_per_length_unit
 
     # some additional optimizations are definitely still possible:
     # - we can redefine traverse_grid so that it is a cpdef-ed function (avoid
@@ -572,13 +562,9 @@ def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
             ray_start = full_ray_start[i,:]
             ray_uvec = full_ray_uvec[i,:]
 
-            tmp_idx, dz = traverse_grid(
-                line_uvec = ray_uvec,
-                line_start = ray_start,
-                grid_left_edge = grid_left_edge,
-                cell_width = cell_width,
-                grid_shape = grid_shape
-            )
+            tmp_idx, dz = traverse_grid(line_uvec = ray_uvec,
+                                        line_start = ray_start,
+                                        spatial_props = spatial_grid_props)
             idx3D_view = tmp_idx
 
             # convert dz to cm to avoid problems later
@@ -615,15 +601,13 @@ def _generate_ray_spectrum(object grid_left_edge, object grid_right_edge,
                 A10_Hz = _A10_Hz,
                 out = out[i,:])
     except:
-        print('There was a problem!')
-        pairs = [('line_uvec', ray_uvec),
-                 ('line_start', ray_start),
-                 ('grid_left_edge', grid_left_edge),
-                 ('cell_width', cell_width),
-                 ('grid_shape', np.array(grid_shape))]
-        for name, arr in pairs:
-            arr_str = np.array2string(arr, floatmode = 'unique')
-            print(f'{name} = {arr_str}')
+        print(
+            "There was a problem!",
+            f'line_uvec = {np.array2string(ray_uvec, floatmode = "unique")}',
+            f'line_start = {np.array2string(ray_start, floatmode = "unique")}',
+            f'spatial_grid_props = {spatial_grid_props!r}',
+            sep = '\n  '
+        )
         raise
     return out
 
@@ -860,13 +844,9 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
             ray_start = full_ray_start[i,:]
             ray_uvec = full_ray_uvec[i,:]
 
-            tmp_idx, dz = traverse_grid(
-                line_uvec = ray_uvec,
-                line_start = ray_start,
-                grid_left_edge = spatial_grid_props.left_edge,
-                cell_width = spatial_grid_props.cell_width,
-                grid_shape = spatial_grid_props.grid_shape
-            )
+            tmp_idx, dz = traverse_grid(line_uvec = ray_uvec,
+                                        line_start = ray_start,
+                                        spatial_props = spatial_grid_props)
 
             idx3D_view = tmp_idx
 
@@ -912,15 +892,13 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
                           'total_tau' : tmp[1]})
 
     except:
-        print('There was a problem!')
-        pairs = [('line_uvec', ray_uvec),
-                 ('line_start', ray_start),
-                 ('grid_left_edge', spatial_grid_props.left_edge),
-                 ('cell_width', spatial_grid_props.cell_width),
-                 ('grid_shape', spatial_grid_props.grid_shape)]
-        for name, arr in pairs:
-            arr_str = np.array2string(arr, floatmode = 'unique')
-            print(f'{name} = {arr_str}')
+        print(
+            "There was a problem!",
+            f'line_uvec = {np.array2string(ray_uvec, floatmode = "unique")}',
+            f'line_start = {np.array2string(ray_start, floatmode = "unique")}',
+            f'spatial_grid_props = {spatial_grid_props!r}',
+            sep = '\n  '
+        )
         raise
     return out_l
 
