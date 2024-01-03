@@ -2,6 +2,8 @@ import dataclasses
 import numpy as np
 import unyt
 
+from gasimage._generate_spec_cy import PyLinInterpPartitionFunc
+
 @dataclasses.dataclass(frozen = True)
 class LineProperties:
     """
@@ -192,18 +194,8 @@ def _build_simple_H_partition_func_table(*, pressure = None,
                ))
         for i in range(T_vals.size)
     ]))
-    return HPartitionFunc(log_T_vals, interp_points)
-    
 
-class HPartitionFunc:
-    def __init__(self, log10_T, log10_partition_func):
-        self.log10_T = log10_T
-        self.log10_partition_func = log10_partition_func
-
-    def __call__(self, T_vals):
-        xp, fp = self.log10_T, self.log10_partition_func
-        return 10.0**np.interp(x = np.log10(T_vals),
-                               xp = xp, fp = fp, left = fp[0], right = fp[-1])
+    return PyLinInterpPartitionFunc(log_T_vals, interp_points)
 
 def crude_H_partition_func(electronic_state_max = 20):
     """

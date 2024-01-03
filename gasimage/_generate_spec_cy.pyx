@@ -25,6 +25,79 @@ cdef extern from *:
     double MH_CGS
     double KBOLTZ_CGS
 
+
+cdef extern from "cpp/stuff.hpp":
+    struct LinInterpPartitionFn:
+        const double* log10_T
+        const double* log10_partition
+        long len
+
+    double eval_partition_fn(const LinInterpPartitionFn& pack,
+                             double T_val)
+        
+
+def _nosubtype_isinstance(obj, classinfo):
+    return isinstance(obj, classinfo) and obj.__class__ == np.ndarray
+
+@cython.auto_pickle(True)
+cdef class PyLinInterpPartitionFunc:
+    cdef object log10_T_arr
+    cdef object log10_partition_arr
+
+    def __init__(self, log10_T, log10_partition):
+        assert _nosubtype_isinstance(log10_T, np.ndarray)
+        assert _nosubtype_isinstance(log10_partition, np.ndarray)
+        assert log10_T.ndim == 1
+        assert log10_T.size > 1
+        assert log10_T.shape == log10_partition.shape
+
+        assert np.isfinite(log10_T).all() and np.isfinite(log10_partition).all()
+        assert (log10_T[1:] > log10_T[:-1]).all()
+
+        _kw = dict(order = 'C', dtype = 'f8', casting = 'safe', copy = True)
+        self.log10_T_arr = log10_T.astype(**_kw)
+        self.log10_partition_arr = log10_partition.astype(**_kw)
+
+    @property
+    def log10_T_vals(self): # this is just for testing purposes
+        return self.log10_T_arr.copy()
+
+    @property
+    def log10_partition_arr(self): # this is just for testing purposes
+        return self.log10_partition_arr.copy()
+
+    cdef LinInterpPartitionFn get_partition_fn_struct(self):
+        # WARNING: make sure the returned object does not outlive self
+        cdef const double[::1] log10_T = self.log10_T_arr
+        cdef const double[::1] log10_partition = self.log10_partition_arr
+
+        cdef LinInterpPartitionFn out
+        out.log10_T = &log10_T[0]
+        out.log10_partition = &log10_partition[0]
+        out.len = self.log10_T_arr.size
+        return out
+
+    def __call__(self, T_vals):
+        # assumes that T_vals is a 1D regular numpy array with units of Kelvin
+        # (it's NOT a unyt.unyt_array)
+
+        cdef LinInterpPartitionFn pack = self.get_partition_fn_struct()
+
+        if np.ndim(T_vals) == 0:
+            return eval_partition_fn(pack,float(T_vals))
+
+        T_vals = np.asanyarray(T_vals)
+
+        cdef const double[:] T_view = T_vals
+        out = np.empty(shape = T_vals.shape, dtype = T_vals.dtype)
+        cdef double[:] out_view = out
+        cdef Py_ssize_t num_vals = T_view.shape[0]
+        cdef Py_ssize_t i
+
+        for i in range(num_vals):
+            out_view[i] = eval_partition_fn(pack,T_view[i])
+        return out
+
 # When considering a transition we construct a new LineProfileStruct for each
 # gas element.
 # -> An instance is configured based on the doppler_parameter_b value and los
@@ -176,7 +249,8 @@ cpdef _generate_ray_spectrum_cy(const double[::1] obs_freq,
                                 const double[:] doppler_parameter_b,
                                 const double[:] dz,
                                 double rest_freq, double A10_Hz,
-                                double[::1] out):
+                                double[::1] out,
+                                const double[:] kinetic_T = None):
     """
     Compute specific intensity (aka monochromatic intensity) from data measured
     along the path of a single ray.
@@ -283,22 +357,53 @@ from .utils.misc import check_consistent_arg_dims, _has_consistent_dims
 # as an attribute... Instead, I want to pass a single value temperature as an
 # argument
 
-cdef class ScalarDopplerParameter:
-    cdef double doppler_parameter_b_cm_per_s
+cdef class PrecomputedDopplerParameter:
+    cdef double[:,:,:] doppler_parameter_b_arr
 
-    def __init__(self, doppler_parameter_b):
-        assert doppler_parameter_b is not None
-        assert doppler_parameter_b.to('cm/s').v > 0
-        self.doppler_parameter_b_cm_per_s = doppler_parameter_b.to('cm/s').v
+    def __init__(self, doppler_parameter_b_arr):
+        self.doppler_parameter_b_arr = doppler_parameter_b_arr
 
     @cython.boundscheck(False)
     @cython.wraparound(False)
     cdef get_vals_cm_per_s(self, long[:,:] idx3Darr,
                            double [::1] out):
         cdef Py_ssize_t i
-        for i in range(idx3Darr.shape[1]): # note: out is allowed to be longer
-                                           #       than is required
-            out[i] = self.doppler_parameter_b_cm_per_s
+        for i in range(idx3Darr.shape[1]):
+            out[i] = self.doppler_parameter_b_arr[idx3Darr[0,i], idx3Darr[1,i],
+                                                  idx3Darr[2,i]]
+        
+
+def build_precomputed_doppler_parameter(grid, fixed_val = None):
+    if fixed_val is not None:
+        assert fixed_val.ndim == 0
+        assert fixed_val.to('cm/s').v > 0
+        b_arr = np.broadcast_to(fixed_val.to('cm/s').v,
+                                shape = grid['gas', 'velocity_x'].shape)
+        return PrecomputedDopplerParameter(b_arr)
+
+    # this is the "incorrect" legacy approach!
+    T_field = ('gas','temperature')
+    mmw_field = ('gas','mean_molecular_weight')
+    T_vals, mmw_vals = grid[T_field], grid[mmw_field]
+
+    # previously, a bug in the units caused a really hard to debug error
+    # (when running the program in parallel). So now we manually check!
+    if not _has_consistent_dims(T_vals, unyt.dimensions.temperature):
+        raise RuntimeError(f"{T_field!r}'s units are wrong")
+    elif not _has_consistent_dims(mmw_vals, unyt.dimensions.dimensionless):
+        raise RuntimeError(f"{mmw_field!r}'s units are wrong")
+
+    to_Kelvin_factor = float(T_vals.uq.to('K').v)
+    b_arr = np.sqrt(2.0 * KBOLTZ_CGS * to_Kelvin_factor * T_vals.ndview /
+                    (mmw_vals.ndview * MH_CGS))
+
+    return PrecomputedDopplerParameter(b_arr)
+
+cdef double doppler_parameter_b_from_temperature(double kinetic_T,
+                                                 double inv_particle_mass_cgs):
+    # this assumes that the temperature is already in units of kelvin
+    return sqrt_f64(2.0 * KBOLTZ_CGS * kinetic_T * inv_particle_mass_cgs)
+
 
 cdef class DopplerParameterFromTemperature:
     cdef double[:,:,::1] temperature_arr
@@ -307,7 +412,6 @@ cdef class DopplerParameterFromTemperature:
 
     def __init__(self, grid, particle_mass_in_grams):
         T_field = ('gas','temperature')
-        mmw_field = ('gas','mean_molecular_weight')
         T_vals = grid[T_field]
 
         # previously, a bug in the units caused a really hard to debug error
@@ -325,63 +429,14 @@ cdef class DopplerParameterFromTemperature:
     cdef get_vals_cm_per_s(self, long[:,:] idx3Darr,
                            double [::1] out):
         cdef Py_ssize_t i
-        cdef long i0, i1, i2
-        for i in range(idx3Darr.shape[1]): # note: out is allowed to be longer
-                                           #       than is required
-            i0 = idx3Darr[0,i]
-            i1 = idx3Darr[1,i]
-            i2 = idx3Darr[2,i]
-
-            out[i] = sqrt_f64(2.0 * KBOLTZ_CGS *
-                              self.internal_to_Kelvin_factor *
-                              self.temperature_arr[i0,i1,i2] *
-                              self.inv_particle_mass_cgs)
-
-
-cdef class DopplerParameterFromTemperatureMMW:
-    # this was the original approach! it's wrong should just use particle mass
-    cdef double[:,:,::1] temperature_arr
-    cdef double[:,:,::1] mmw_arr
-    cdef double internal_to_Kelvin_factor
-
-    def __init__(self, grid):
-        T_field = ('gas','temperature')
-        mmw_field = ('gas','mean_molecular_weight')
-        T_vals, mmw_vals = grid[T_field], grid[mmw_field]
-
-        # previously, a bug in the units caused a really hard to debug error
-        # (when running the program in parallel). So now we manually check!
-        if not _has_consistent_dims(T_vals, unyt.dimensions.temperature):
-            raise RuntimeError(f"{T_field!r}'s units are wrong")
-        elif not _has_consistent_dims(mmw_vals, unyt.dimensions.dimensionless):
-            raise RuntimeError(f"{mmw_field!r}'s units are wrong")
-
-        self.temperature_arr = T_vals.ndview # strip units
-        self.mmw_arr = mmw_vals.ndview
-
-        self.internal_to_Kelvin_factor = float(T_vals.uq.to('K').v)
-
-    @cython.boundscheck(False)
-    @cython.wraparound(False)
-    cdef get_vals_cm_per_s(self, long[:,:] idx3Darr,
-                           double [::1] out):
-        cdef Py_ssize_t i
-        cdef long i0, i1, i2
-        for i in range(idx3Darr.shape[1]): # note: out is allowed to be longer
-                                           #       than is required
-            i0 = idx3Darr[0,i]
-            i1 = idx3Darr[1,i]
-            i2 = idx3Darr[2,i]
-
-            out[i] = sqrt_f64(2.0 * KBOLTZ_CGS *
-                              self.internal_to_Kelvin_factor *
-                              self.temperature_arr[i0,i1,i2] /
-                              (self.mmw_arr[i0,i1,i2] * MH_CGS))
+        for i in range(idx3Darr.shape[1]):
+            out[i] = doppler_parameter_b_from_temperature(
+                self.temperature_arr[idx3Darr[0,i],idx3Darr[1,i],idx3Darr[2,i]],
+                self.inv_particle_mass_cgs)
 
 ctypedef fused FusedDopplerParameterType:
-    ScalarDopplerParameter
+    PrecomputedDopplerParameter
     DopplerParameterFromTemperature
-    DopplerParameterFromTemperatureMMW # the "wrong" legacy approach
 
 def _construct_Doppler_Parameter_Approach(grid, approach,
                                           particle_mass_in_grams = None):
@@ -390,7 +445,7 @@ def _construct_Doppler_Parameter_Approach(grid, approach,
                            "Parameter is changing!")
     elif isinstance(approach,str):
         if approach == 'legacy':
-            return DopplerParameterFromTemperatureMMW(grid)
+            return build_precomputed_doppler_parameter(grid, None)
         elif approach == 'normal':
             return DopplerParameterFromTemperature(grid, particle_mass_in_grams)
         else:
@@ -398,7 +453,7 @@ def _construct_Doppler_Parameter_Approach(grid, approach,
                 "when doppler_parameter_b approach is a str, it must be "
                 f"'legacy' or 'normal', not {approach!r}")
     else:
-        return ScalarDopplerParameter(approach)
+        return build_precomputed_doppler_parameter(grid, approach)
 
 def _calc_doppler_parameter_b(grid, idx3Darr, approach = None,
                               particle_mass_in_grams = None):
@@ -425,11 +480,8 @@ def _calc_doppler_parameter_b(grid, idx3Darr, approach = None,
     out = np.empty(shape = (idx3Darr.shape[1],), dtype = 'f8')
     tmp = _construct_Doppler_Parameter_Approach(
         grid, approach, particle_mass_in_grams = particle_mass_in_grams)
-    if isinstance(tmp, ScalarDopplerParameter):
-        (<ScalarDopplerParameter>tmp).get_vals_cm_per_s(
-            idx3Darr = idx3Darr, out = out)
-    elif isinstance(tmp, DopplerParameterFromTemperatureMMW):
-        (<DopplerParameterFromTemperatureMMW>tmp).get_vals_cm_per_s(
+    if isinstance(tmp, PrecomputedDopplerParameter):
+        (<PrecomputedDopplerParameter>tmp).get_vals_cm_per_s(
             idx3Darr = idx3Darr, out = out)
     elif isinstance(tmp, DopplerParameterFromTemperature):
         (<DopplerParameterFromTemperature>tmp).get_vals_cm_per_s(
@@ -760,10 +812,27 @@ cdef void clean_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj):
         PyMem_Free(obj.segStart_expNegTau)
 
 
-def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
-                                    full_ray_start, full_ray_uvec,
-                                    obs_freq, line_props, partition_func,
-                                    particle_mass_g, ndens_field):
+
+from enum import Enum
+
+class NdensStrategy(Enum):
+    IonNDensGrid_LTERatio = 1
+    # -> we have implemented the above case
+    # -> the grid has a field for the total number density of the ion species
+    # -> the user must provide a partition function
+
+    #AbsorberNDensGrid_LTERatio = 2
+    #AbsorberNDensGrid_ArbitraryRatio = 3
+    # -> this case would be nice to have... This is the most generic case!
+
+    SpecialSpinFlipCase = 4
+
+def generate_noscatter_ray_spectrum(
+        grid, spatial_grid_props,
+        full_ray_start, full_ray_uvec,
+        obs_freq, line_props, particle_mass_g, ndens_field,
+        partition_func = None, ndens_ratio_field = None,
+        ndens_strategy = NdensStrategy.IonNDensGrid_LTERatio):
 
     cdef list out_l = []
 
@@ -816,6 +885,15 @@ def generate_noscatter_ray_spectrum(grid, spatial_grid_props,
     _cur_doppler_parameter_b_npy = np.empty(shape = (max_num,), dtype = 'f8')
     cdef double[::1] cur_doppler_parameter_b = _cur_doppler_parameter_b_npy
 
+    if ndens_strategy == NdensStrategy.IonNDensGrid_LTERatio:
+        assert partition_func is not None
+        assert ndens_ratio_field is None
+    elif ndens_strategy == NdensStrategy.SpecialSpinFlipCase:
+        assert partition_func is None
+        assert ndens_ratio_field is not None
+        raise NotImplementedError("this case must be implemented!")
+    else:
+        raise NotImplementedError("unimplemented ndens_strategy")
 
     cdef Py_ssize_t nrays = full_ray_uvec.shape[0]
     cdef Py_ssize_t i, j
@@ -898,7 +976,7 @@ class NdensRatio:
 @cython.cdivision(True)
 cdef void ndens_and_ratio_from_partition(double[::1] ndens_1,
                                          double[::1] n2g1_div_n1g2,
-                                         const double[::1] inv_partition_vals,
+                                         PyLinInterpPartitionFunc partition_fn,
                                          const double[::1] kinetic_T,
                                          const double[::1] ndens_ion_species,
                                          const double g_1,
@@ -907,13 +985,17 @@ cdef void ndens_and_ratio_from_partition(double[::1] ndens_1,
                                          const Py_ssize_t num_segments):
     cdef double restframe_energy_photon_erg = rest_freq_Hz * HPLANCK_CGS
     cdef double beta_cgs
+
+    cdef LinInterpPartitionFn partition_fn_pack \
+        = partition_fn.get_partition_fn_struct()
+
     for pos_i in range(num_segments):
         # thermodynamic beta
         beta_cgs = 1.0 / (kinetic_T[pos_i] * KBOLTZ_CGS)
 
         ndens_1[pos_i] = (
             ndens_ion_species[pos_i] * g_1 * exp_f64(-energy_1_erg * beta_cgs)
-            * inv_partition_vals[pos_i]
+            / eval_partition_fn(partition_fn_pack, kinetic_T[pos_i]) 
         )
 
         # n1/n2 = (g1/g2) * exp(restframe_energy_photon_cgs * beta_cgs)
@@ -1031,17 +1113,16 @@ def _generate_noscatter_spectrum_cy(object line_props,
     _n2g1_div_n1g2 = np.empty(shape = (num_segments,), dtype = 'f8')
     cdef double[::1] n2g1_div_n1g2 = _n2g1_div_n1g2
 
-    if callable(level_pops_arg):
+    if isinstance(level_pops_arg, PyLinInterpPartitionFunc):
         # in this case:
         # -> treat level_pops_arg as partition function
         # -> treat ndens as number density of particles described by partition
         #    function
         # -> assume LTE
-        inv_partition_func_vals = 1.0 / level_pops_arg(kinetic_T)
 
         ndens_and_ratio_from_partition(
             ndens_1 = ndens_1, n2g1_div_n1g2 = n2g1_div_n1g2,
-            inv_partition_vals = inv_partition_func_vals,
+            partition_fn = <PyLinInterpPartitionFunc>level_pops_arg,
             kinetic_T = kinetic_T, ndens_ion_species = ndens,
             g_1 = g_1, energy_1_erg = line_props.energy_lo_erg,
             rest_freq_Hz = rest_freq_Hz, num_segments = num_segments)
