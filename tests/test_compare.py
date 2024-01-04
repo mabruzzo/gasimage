@@ -20,6 +20,7 @@ from py_generate_noscatter_spectrum import (
 )
 from ray_testing_utils import ray_values, _to_uvec
 from test_full import _dummy_create_field_callback
+from test_generate_spectrum import call_cython_noscatter
 
 
 def _get_ray_start_vec(ds):
@@ -291,14 +292,14 @@ def _dumber_full_noscatter_rt(accum_strat, concrete_ray_list, ds,
         ).to('cm/s')
 
         if True:
-            tmp = _generate_noscatter_spectrum_cy(
+            tmp = call_cython_noscatter(
                 line_props = accum_strat.line_props,
-                obs_freq = unyt.unyt_array(accum_strat.obs_freq_Hz, 'Hz').ndview,
-                vLOS = vLOS.to('cm/s').ndview,
-                ndens = ray_data[accum_strat.ndens_field].to('cm**-3').ndview,
-                kinetic_T = ray_data['gas','temperature'].to('K').ndview,
-                doppler_parameter_b = doppler_parameter_b.to('cm/s').ndview,
-                dz = ds.arr(ray_data['dl'],'code_length').to('cm').ndview,
+                obs_freq = unyt.unyt_array(accum_strat.obs_freq_Hz, 'Hz'),
+                vLOS = vLOS.to('cm/s'),
+                ndens = ray_data[accum_strat.ndens_field],
+                kinetic_T = ray_data['gas','temperature'],
+                doppler_parameter_b = doppler_parameter_b,
+                dz = ds.arr(ray_data['dl'],'code_length'),
                 level_pops_arg = accum_strat.partition_func
             )
         else:

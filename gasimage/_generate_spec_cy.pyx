@@ -591,11 +591,6 @@ def generate_ray_spectrum(grid, spatial_grid_props,
 
     if legacy_optically_thin_spin_flip:
         assert ndens_strat == NdensStrategy.SpecialLegacySpinFlipCase
-        nrays = full_ray_uvec.shape[0]
-        if out is not None:
-            assert out.shape == (nrays, obs_freq.size)
-        else:
-            out = np.empty(shape = (nrays, obs_freq.size), dtype = np.float64)
     else:
         assert out is None
         if ndens_strat == NdensStrategy.SpecialLegacySpinFlipCase:
@@ -645,16 +640,28 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                            double[:,:,::1] kinetic_T_grid,
                            double kinetic_T_to_K_factor,
                            object partition_func,
-                           double[:,::1] out):
+                           object out):
     # this function sure has a lot of arguments...
-
-    cdef list out_l = []
 
     cdef double _A_Hz = float(line_props.A_quantity.to('Hz').v)
     cdef double _rest_freq_Hz = float(line_props.freq_quantity.to('Hz').v)
 
     cdef Py_ssize_t nrays = full_ray_uvec.shape[0]
     cdef Py_ssize_t i, j
+
+    cdef Py_ssize_t nfreq = obs_freq_Hz.shape[0]
+    if legacy_optically_thin_spin_flip:
+        out_shape = (nrays, nfreq)
+    else:
+        out_shape = (nrays,  2*nfreq)
+
+    if out is None:
+        out = np.empty(out_shape, dtype = 'f8')
+    else:
+        assert out.shape == out_shape
+        assert out.dtype == np.dtype('f8')
+
+    cdef double[:,::1] out_view = out
 
     # declaring types used by the nested loop:
     cdef long i0, i1, i2
@@ -729,12 +736,12 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                     doppler_parameter_b = cur_doppler_parameter_b,
                     rest_freq = _rest_freq_Hz, dz = dz,
                     A10_Hz = _A_Hz,
-                    out = out[i,:])
+                    out = out_view[i,:])
             else:
                 # sanity check!
                 assert ndens_strat == NdensStrategy.IonNDensGrid_LTERatio
                 
-                tmp = _generate_noscatter_spectrum_cy(
+                _generate_noscatter_spectrum_cy(
                     line_props = line_props,
                     obs_freq = obs_freq_Hz,
                     vLOS = vlos,
@@ -742,9 +749,9 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                     kinetic_T = kinetic_T,
                     doppler_parameter_b = cur_doppler_parameter_b,
                     dz = dz,
-                    level_pops_arg = partition_func)
-                out_l.append({'integrated_source' : tmp[0],
-                              'total_tau' : tmp[1]})
+                    level_pops_arg = partition_func,
+                    out_integrated_source = out_view[i,:nfreq],
+                    out_tau = out_view[i, nfreq:])
     except:
         print(
             "There was a problem!",
@@ -759,6 +766,10 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
     if legacy_optically_thin_spin_flip:
         return out
     else:
+        out_l = [
+            {'integrated_source' : out[i,:nfreq], 'total_tau' : out[i,nfreq:]}
+            for i in range(nrays)
+        ]
         return out_l
 
 
@@ -838,10 +849,12 @@ cdef IntegralStructNoScatterRT prep_IntegralStructNoScatterRT(
     # -> by convention, we define the tau at this location to have an optical
     #    depth of zeros at all frequencies (we can always increase the optical
     #    depth used here after we finish the integral)
+    # we also set integrated_source to have values of 0.0
     cdef Py_ssize_t freq_i
     for freq_i in range(out.nfreq):
         out.total_tau[freq_i] = 0.0
         out.segStart_expNegTau[freq_i] = 1.0 # = exp_f64(-out.total_tau[freq_i])
+        out.integrated_source[freq_i] = 0.0
     return out
 
 
@@ -982,7 +995,9 @@ def _generate_noscatter_spectrum_cy(object line_props,
                                     const double[::1] kinetic_T,
                                     const double[::1] doppler_parameter_b,
                                     const double[::1] dz,
-                                    object level_pops_arg):
+                                    object level_pops_arg,
+                                    double[::1] out_integrated_source,
+                                    double[::1] out_tau):
     """
     Compute the specific intensity (aka monochromatic intensity) and optical
     depth from data measured along the path of a single ray.
@@ -1033,18 +1048,18 @@ def _generate_noscatter_spectrum_cy(object line_props,
 
     Returns
     -------
-    optical_depth: `numpy.ndarray`, shape(nfreq,ngas+1)
-        Holds the integrated optical depth as a function of frequency computed
-        at the edge of each ray-segment. We define optical depth such that it 
-        is zero at the observer,
-        and such that it increases as we move backwards along the ray (i.e. it
-        increases with distance from the observer)
     integrated_source: ndarray, shape(nfreq,)
         Holds the integrated_source function as a function of frequency. This 
         is also the total intensity if there is no background intensity. If
         the background intensity is given by ``bkg_intensity`` (an array where
         theat varies with frequency), then the total intensity is just
         ``bkg_intensity*np.exp(-tau[:, -1]) + integrated_source``.
+    optical_depth: `numpy.ndarray`, shape(nfreq,ngas+1)
+        Holds the integrated optical depth as a function of frequency computed
+        at the edge of each ray-segment. We define optical depth such that it 
+        is zero at the observer,
+        and such that it increases as we move backwards along the ray (i.e. it
+        increases with distance from the observer)
     """
     cdef Py_ssize_t num_segments = dz.size
     cdef Py_ssize_t pos_i, freq_i # indexing variables
@@ -1090,13 +1105,8 @@ def _generate_noscatter_spectrum_cy(object line_props,
 
     cdef Py_ssize_t nfreq = obs_freq.shape[0]
 
-    # the following are output variables (they will be updated by functions
-    # operating upon accumulator)
-    tau = np.empty(shape = (nfreq,), dtype = 'f8')
-    integrated_source = np.zeros(shape=(nfreq,), dtype = 'f8')
-
     cdef IntegralStructNoScatterRT accumulator = \
-        prep_IntegralStructNoScatterRT(tau, integrated_source)
+        prep_IntegralStructNoScatterRT(out_tau, out_integrated_source)
 
     if accumulator.nfreq < 1:
         raise RuntimeError("Problem with initializing the accumulator!")
@@ -1174,4 +1184,4 @@ def _generate_noscatter_spectrum_cy(object line_props,
     PyMem_Free(alpha_nu_cgs)
 
     # these output arrays were updated within accumulator!
-    return integrated_source, tau
+    #return out_integrated_source, out_tau

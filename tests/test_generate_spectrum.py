@@ -357,6 +357,39 @@ def subdivided3_noscatter(**main_kwargs):
     tmp = consolidate_noscatter_rtchunks(results)
     return [tmp[k] for k in ordered_keys]
 
+def call_cython_noscatter(*, return_timing = False, **kwargs):
+    # this wraps _generate_noscatter_spectrum_cy amd tries to provide a
+    # consistent interface to _generate_noscatter_spectrum
+
+    # customize the kwargs
+    new_kw = kwargs.copy()
+    for (kw, u, _) in _noscatter_kwargs_arr_spec:
+        new_kw[kw] = kwargs[kw].to(u).ndview
+        nfreq = new_kw['obs_freq'].size
+
+    out_integrated_source = np.empty((nfreq,), dtype = 'f8')
+    out_tau = np.empty((nfreq,), dtype = 'f8')
+
+    t1 = datetime.datetime.now()
+    _generate_noscatter_spectrum_cy(
+        out_integrated_source = out_integrated_source,
+        out_tau = out_tau, **new_kw)
+    t2 = datetime.datetime.now()
+    if return_timing:
+        return (out_integrated_source, out_tau), t2 - t1
+    return (out_integrated_source, out_tau)
+
+class TimedFunc:
+    def __init__(self, func):
+        self.func = func
+    def __call__(self, *, return_timing = False, **kwargs):
+        func = self.func
+        t1 = datetime.datetime.now()
+        out = func(**kwargs)
+        t2 = datetime.datetime.now()
+        if return_timing:
+            return out, t2 - t1
+        return out
 
 def _test_cmp_generate_ray_spectrum(nfreq = 401, ngas = 100,
                                     zero_vlos = True,
@@ -370,9 +403,9 @@ def _test_cmp_generate_ray_spectrum(nfreq = 401, ngas = 100,
     rest_freq = line_props.freq_quantity
 
     fn_name_pairs = [
-        (_generate_noscatter_spectrum, 'python version'),
-        (subdivided3_noscatter, 'subdivided_py'),
-        (_generate_noscatter_spectrum_cy, 'optimized cython version')]
+        (TimedFunc(_generate_noscatter_spectrum), 'python version'),
+        (TimedFunc(subdivided3_noscatter), 'subdivided_py'),
+        (call_cython_noscatter, 'optimized cython version')]
 
     data = _gen_test_data(rest_freq = line_props.freq_quantity, nfreq = nfreq,
                           ngas = ngas, zero_vlos = zero_vlos, seed = seed,
@@ -387,27 +420,17 @@ def _test_cmp_generate_ray_spectrum(nfreq = 401, ngas = 100,
         level_pops_arg = partition_func,
     )
 
-    def _customize_kwargs(fn, kwargs):
-        if fn == _generate_noscatter_spectrum_cy:
-            out = kwargs.copy()
-            for (kw, u, _) in _noscatter_kwargs_arr_spec:
-                out[kw] = kwargs[kw].to(u).ndview
-            return out
-        return kwargs
-
     integrated_source_l = []
     tau_l = []
 
     for fn, fn_name in fn_name_pairs:
-        cur_kwargs = _customize_kwargs(fn, kwargs)
-        t1 = datetime.datetime.now()
-        integrated_source, tau_tot = fn( **cur_kwargs)
-        t2 = datetime.datetime.now()
+        (integrated_source, tau_tot), elapsed = fn(return_timing = True,
+                                                   **kwargs)
         if isinstance(integrated_source, unyt.unyt_array):
             integrated_source = integrated_source.v
         integrated_source_l.append(integrated_source)
         tau_l.append(tau_tot)
-        print(f'{fn_name}, elapsed: {t2-t1}')
+        print(f'{fn_name}, elapsed: {elapsed}')
 
     py_fn_name = fn_name_pairs[0][1]
 
@@ -416,8 +439,10 @@ def _test_cmp_generate_ray_spectrum(nfreq = 401, ngas = 100,
 
         for name, out_l in [("integrated_source",integrated_source_l),
                             ("tau_tot", tau_l)][::-1]:
+            #print("\n\nCOMPARING ", name, "\n")
             py_version, cy_version = out_l[0], out_l[compare_fn_ind]
-
+            #print('py_version', py_version)
+            #print(compare_fn_name, cy_version)
             np.testing.assert_allclose(
                 actual = cy_version, desired = py_version,
                 rtol=rtol, atol = atol,
