@@ -509,12 +509,6 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     assert str(obs_freq.units) == 'Hz'
     cdef const double[::1] _obs_freq_Hz_view = obs_freq.ndview
 
-    nrays = full_ray_uvec.shape[0]
-    if out is not None:
-        assert out.shape == (nrays, obs_freq.size)
-    else:
-        out = np.empty(shape = (nrays, obs_freq.size), dtype = np.float64)
-
     # Prefetch some quantities and do some work to figure out unit conversions
     # ahead of time:
 
@@ -534,6 +528,25 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     # now, get versions of velocity components without units
     vx, vy, vz = tmp_vx.ndview, tmp_vy.ndview, tmp_vz.ndview
 
+    legacy_optically_thin_spin_flip = True
+
+    if legacy_optically_thin_spin_flip:
+        particle_mass_in_grams = MH_CGS
+        nrays = full_ray_uvec.shape[0]
+        if out is not None:
+            assert out.shape == (nrays, obs_freq.size)
+        else:
+            out = np.empty(shape = (nrays, obs_freq.size), dtype = np.float64)
+    else:
+        assert out is None
+        raise ValueError("Need particle_mass_in_grams!")
+
+    # in certain cases, we don't need to load the temperature field... It may
+    # be useful to avoid loading it in these cases (to handle cases where the
+    # temperature field isn't defined)
+    kinetic_T = grid['gas', 'temperature']
+    kinetic_T_to_K_factor = float(kinetic_T.uq.to('K').v)
+
     # currently, this function can only be used for the 21 spin-flip transition
     # -> consequently, we ALWAY specify that the particle mass is that of a
     #    Hydrogen atom!
@@ -542,6 +555,7 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     )
 
     return _generate_ray_spectrum(
+        legacy_optically_thin_spin_flip = legacy_optically_thin_spin_flip,
         spatial_grid_props = spatial_grid_props,
         full_ray_start = full_ray_start, full_ray_uvec = full_ray_uvec,
         line_props = default_spin_flip_props(),
@@ -551,10 +565,13 @@ def generate_ray_spectrum(grid, spatial_grid_props,
         doppler_parameter_b = doppler_parameter_b,
         ndens_HI_n1state_grid = ndens_HI_n1state_grid,
         ndens_to_cc_factor = ndens_to_cc_factor,
+        kinetic_T_grid = kinetic_T.ndview,
+        kinetic_T_to_K_factor = kinetic_T_to_K_factor,
         out = out)
 
 
-def _generate_ray_spectrum(object spatial_grid_props,
+def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
+                           object spatial_grid_props,
                            object full_ray_start, object full_ray_uvec,
                            object line_props,
                            double[::1] obs_freq_Hz,
@@ -564,9 +581,10 @@ def _generate_ray_spectrum(object spatial_grid_props,
                            FusedDopplerParameterType doppler_parameter_b,
                            double[:,:,::1] ndens_HI_n1state_grid,
                            double ndens_to_cc_factor,
+                           double[:,:,::1] kinetic_T_grid,
+                           double kinetic_T_to_K_factor,
                            double[:,::1] out):
 
-    cdef bint legacy_optically_thin_spin_flip = True
     cdef list out_l = []
 
     cdef double _A_Hz = float(line_props.A_quantity.to('Hz').v)
@@ -580,14 +598,16 @@ def _generate_ray_spectrum(object spatial_grid_props,
     cdef const double[::1] cur_uvec_view
     cdef long[:,:] idx3D_view
 
+    # allocate 1d buffers used to hold the various quantities along the ray
     cdef long max_num = max_num_intersections(spatial_grid_props.grid_shape)
-    _vlos_npy = np.empty(shape = (max_num,), dtype = 'f8')
-    cdef double[::1] vlos = _vlos_npy
-    _ndens_HI_n1state_npy = np.empty(shape = (max_num,), dtype = 'f8')
-    cdef double[::1] ndens_HI_n1state = _ndens_HI_n1state_npy
+    cdef dict npy_buffers = dict(
+        (k, np.empty(shape = (max_num,), dtype = 'f8'))
+        for k in ['vlos', 'ndens', 'kinetic_T', 'doppler_parameter'])
 
-    _cur_doppler_parameter_b_npy = np.empty(shape = (max_num,), dtype = 'f8')
-    cdef double[::1] cur_doppler_parameter_b = _cur_doppler_parameter_b_npy
+    cdef double[::1] vlos = npy_buffers['vlos']
+    cdef double[::1] ndens_HI_n1state = npy_buffers['ndens']
+    cdef double[::1] kinetic_T = npy_buffers['kinetic_T']
+    cdef double[::1] cur_doppler_parameter_b = npy_buffers['doppler_parameter']
 
     cdef double cm_per_length_unit = spatial_grid_props.cm_per_length_unit
 
@@ -617,6 +637,7 @@ def _generate_ray_spectrum(object spatial_grid_props,
                 idx3Darr = idx3D_view, out = cur_doppler_parameter_b
             )
 
+            # read the quantities along the ray into the 1d buffer
             cur_uvec_view = ray_uvec
             with cython.boundscheck(False), cython.wraparound(False):
                 for j in range(dz.size):
@@ -631,34 +652,27 @@ def _generate_ray_spectrum(object spatial_grid_props,
                         cur_uvec_view[2] * vz[i0,i1,i2]
                     ) * vel_to_cm_per_s_factor
 
-            if legacy_optically_thin_spin_flip:
-                for j in range(dz.size):
-                    i0 = idx3D_view[0,j]
-                    i1 = idx3D_view[1,j]
-                    i2 = idx3D_view[2,j]
-
                     ndens_HI_n1state[j] = (ndens_HI_n1state_grid[i0,i1,i2] *
                                            ndens_to_cc_factor)
+                    kinetic_T[j] = (kinetic_T_grid[i0,i1,i2] *
+                                    kinetic_T_to_K_factor)
 
+            if legacy_optically_thin_spin_flip:
                 _generate_ray_spectrum_cy(
-                    obs_freq = obs_freq_Hz,
-                    velocities = vlos,
+                    obs_freq = obs_freq_Hz, velocities = vlos,
                     ndens_HI_n1state = ndens_HI_n1state,
                     doppler_parameter_b = cur_doppler_parameter_b,
-                    rest_freq = _rest_freq_Hz,
-                    dz = dz,
+                    rest_freq = _rest_freq_Hz, dz = dz,
                     A10_Hz = _A_Hz,
                     out = out[i,:])
-            else:
-                # NOT TESTED YET!!!
-                
+            else: # NOT TESTED YET!!!
                 tmp = _generate_noscatter_spectrum_cy(
                     line_props = line_props,
                     obs_freq = obs_freq_Hz,
                     vLOS = vlos,
                     #ndens = ndens,
                     ndens = None,
-                    kinetic_T = None,
+                    kinetic_T = kinetic_T,
                     doppler_parameter_b = cur_doppler_parameter_b,
                     dz = dz,
                     level_pops_arg = None)#partition_func)
