@@ -39,11 +39,7 @@ import numpy as np
 import unyt
 
 from .generate_ray_spectrum import generate_ray_spectrum_legacy
-from ._generate_spec_cy import (
-    NdensStrategy,
-    generate_ray_spectrum,
-    generate_noscatter_ray_spectrum
-)
+from ._generate_spec_cy import NdensStrategy, generate_ray_spectrum
 from .ray_traversal.spatial_grid_props import SpatialGridProps
 from .rt_config import LineProperties, default_spin_flip_props
 
@@ -265,15 +261,18 @@ class NoScatterRTAccumStrat:
     def do_work(self, grid, spatial_grid_props, full_ray_start, full_ray_uvec):
 
         obs_freq = unyt.unyt_array(self.obs_freq_Hz, 'Hz')
-
-        out = generate_noscatter_ray_spectrum(
+        
+        out = generate_ray_spectrum(
             grid = grid, spatial_grid_props = spatial_grid_props,
             full_ray_start = full_ray_start, full_ray_uvec = full_ray_uvec,
-            obs_freq = obs_freq, line_props = self.line_props,
+            line_props = self.line_props,
+            legacy_optically_thin_spin_flip = False,
+            particle_mass_in_grams = self.species_mass_g, obs_freq = obs_freq,
+            ndens_strat = NdensStrategy.IonNDensGrid_LTERatio,
+            ndens_field = self.ndens_field,
             partition_func = self.partition_func,
-            particle_mass_g = self.species_mass_g,
-            ndens_field = self.ndens_field)
-
+            doppler_parameter_b = 'normal',
+            out = None)
         return out
 
     def get_rslt_props(self):

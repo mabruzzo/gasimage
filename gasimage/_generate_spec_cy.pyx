@@ -574,7 +574,7 @@ def generate_ray_spectrum(grid, spatial_grid_props,
             out = np.empty(shape = (nrays, obs_freq.size), dtype = np.float64)
     else:
         assert out is None
-        if ndens_strat != NdensStrategy.SpecialLegacySpinFlipCase:
+        if ndens_strat == NdensStrategy.SpecialLegacySpinFlipCase:
             raise NotImplementedError("THIS CASE ISN'T SUPPORTED YET!")
 
     # in certain cases, we don't need to load the temperature field... It may
@@ -706,9 +706,9 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                     rest_freq = _rest_freq_Hz, dz = dz,
                     A10_Hz = _A_Hz,
                     out = out[i,:])
-            else: # NOT TESTED YET!!!
+            else:
                 # sanity check!
-                assert ndens_strat == NdensStrategy.SpecialLegacySpinFlipCase
+                assert ndens_strat == NdensStrategy.IonNDensGrid_LTERatio
                 
                 tmp = _generate_noscatter_spectrum_cy(
                     line_props = line_props,
@@ -897,151 +897,6 @@ cdef void clean_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj):
     if ((obj.nfreq > 0) and (obj.segStart_expNegTau != NULL)):
         PyMem_Free(obj.segStart_expNegTau)
 
-
-
-
-
-def generate_noscatter_ray_spectrum(
-        grid, spatial_grid_props,
-        full_ray_start, full_ray_uvec,
-        obs_freq, line_props, particle_mass_g, ndens_field,
-        partition_func = None, ndens_ratio_field = None,
-        ndens_strategy = NdensStrategy.IonNDensGrid_LTERatio):
-
-    cdef list out_l = []
-
-    check_consistent_arg_dims(obs_freq, unyt.dimensions.frequency, 'obs_freq')
-    assert obs_freq.ndim == 1
-    assert str(obs_freq.units) == 'Hz'
-    cdef const double[::1] obs_freq_Hz = obs_freq.ndview
-
-    cdef long max_num = max_num_intersections(spatial_grid_props.grid_shape)
-
-    # load in velocity information:
-    tmp_vx = grid['gas', 'velocity_x']
-    tmp_vy = grid['gas', 'velocity_y']
-    tmp_vz = grid['gas', 'velocity_z']
-    assert ((tmp_vx.units == tmp_vy.units) and (tmp_vx.units == tmp_vx.units))
-    # compute the factor that must be multiplied by velocity to convert to cm/s
-    cdef double vel_to_cm_per_s_factor = float(tmp_vx.uq.to('cm/s').v)
-    # now, get versions of velocity components without units
-    cdef double[:,:,::1] vx = tmp_vx.ndview
-    cdef double[:,:,::1] vy = tmp_vy.ndview
-    cdef double[:,:,::1] vz = tmp_vz.ndview
-    # prepare the buffer used to hold the LOS velocity data along the ray
-    _vlos_npy = np.empty(shape = (max_num,), dtype = 'f8')
-    cdef double[::1] vlos = _vlos_npy
-
-    # load in the grid number-density data and prepare the buffer that will be
-    # used to hold the number-density data along the ray
-    _ndens_grid = grid[ndens_field]
-    cdef const double[:,:,::1] ndens_grid = _ndens_grid.ndview
-    cdef double ndens_to_invcc = float(_ndens_grid.uq.to('cm**-3').v)
-    _ndens_npy = np.empty(shape = (max_num,), dtype = 'f8')
-    cdef double[::1] ndens = _ndens_npy
-
-    # load in the grid kinetic-T data and prepare the buffer that will be
-    # used to hold the kinetic-T data along the ray
-    _kinetic_T_grid = grid['gas','temperature']
-    cdef const double[:,:,::1] kinetic_T_grid = _kinetic_T_grid.ndview
-    cdef double kinetic_T_to_K = float(_kinetic_T_grid.uq.to('K').v)
-    _kinetic_T_npy = np.empty(shape = (max_num,), dtype = 'f8')
-    cdef double[::1] kinetic_T_view = _kinetic_T_npy
-
-    # prepare the DopplerParameter-calculator
-    cdef DopplerParameterFromTemperature doppler_parameter_b = \
-        <DopplerParameterFromTemperature?> \
-        _construct_Doppler_Parameter_Approach(
-            grid, approach = 'normal',
-            particle_mass_in_grams = particle_mass_g)
-    # prepare the 1d buffer used to hold the doppler parameter data along the
-    # ray
-    _cur_doppler_parameter_b_npy = np.empty(shape = (max_num,), dtype = 'f8')
-    cdef double[::1] cur_doppler_parameter_b = _cur_doppler_parameter_b_npy
-
-    if ndens_strategy == NdensStrategy.IonNDensGrid_LTERatio:
-        assert partition_func is not None
-        assert ndens_ratio_field is None
-    elif ndens_strategy == NdensStrategy.SpecialSpinFlipCase:
-        assert partition_func is None
-        assert ndens_ratio_field is not None
-        raise NotImplementedError("this case must be implemented!")
-    else:
-        raise NotImplementedError("unimplemented ndens_strategy")
-
-    cdef Py_ssize_t nrays = full_ray_uvec.shape[0]
-    cdef Py_ssize_t i, j
-    cdef Py_ssize_t num_cells
-
-    # declaring types used by the nested loop:
-    cdef long i0, i1, i2
-    cdef const double[::1] cur_uvec_view
-    cdef long[:,:] idx3D_view
-
-    try:
-
-        for i in range(nrays):
-            ray_start = full_ray_start[i,:]
-            ray_uvec = full_ray_uvec[i,:]
-
-            tmp_idx, dz = traverse_grid(line_uvec = ray_uvec,
-                                        line_start = ray_start,
-                                        spatial_props = spatial_grid_props)
-
-            idx3D_view = tmp_idx
-
-            # convert dz to cm to avoid problems later (but DON'T convert
-            # it into a unyt_array)
-            dz = dz * spatial_grid_props.cm_per_length_unit
-
-            doppler_parameter_b.get_vals_cm_per_s(
-                idx3Darr = idx3D_view, out = cur_doppler_parameter_b
-            )
-
-            # copy grid data along the ray into 1d buffers!
-            cur_uvec_view = ray_uvec
-            num_cells = dz.size
-            with cython.wraparound(False):
-                for j in range(num_cells):
-                    i0 = idx3D_view[0,j]
-                    i1 = idx3D_view[1,j]
-                    i2 = idx3D_view[2,j]
-
-                    # should probably confirm correctness of velocity sign
-                    vlos[j] = (
-                        cur_uvec_view[0] * vx[i0,i1,i2] +
-                        cur_uvec_view[1] * vy[i0,i1,i2] +
-                        cur_uvec_view[2] * vz[i0,i1,i2]
-                    ) * vel_to_cm_per_s_factor
-
-                    ndens[j] = ndens_grid[i0,i1,i2] * ndens_to_invcc
-
-                    kinetic_T_view[j] = (kinetic_T_grid[i0,i1,i2] *
-                                         kinetic_T_to_K)
-
-            tmp = _generate_noscatter_spectrum_cy(
-                line_props = line_props, obs_freq = obs_freq_Hz,
-                vLOS = vlos, ndens = ndens,
-                # our choice to pass a numpy array to kinetic_T is deliberate
-                kinetic_T = _kinetic_T_npy[:num_cells],
-                doppler_parameter_b = cur_doppler_parameter_b,
-                dz = dz,
-                level_pops_arg = partition_func
-            )
-            out_l.append({'integrated_source' : tmp[0],
-                          'total_tau' : tmp[1]})
-
-    except:
-        print(
-            "There was a problem!",
-            f'line_uvec = {np.array2string(ray_uvec, floatmode = "unique")}',
-            f'line_start = {np.array2string(ray_start, floatmode = "unique")}',
-            f'spatial_grid_props = {spatial_grid_props!r}',
-            sep = '\n  '
-        )
-        raise
-    return out_l
-
 class NdensRatio:
     hi_div_lo: np.ndarray
 
@@ -1202,8 +1057,8 @@ def _generate_noscatter_spectrum_cy(object line_props,
             rest_freq_Hz = rest_freq_Hz, num_segments = num_segments)
     elif isinstance(level_pops_arg, NdensRatio):
         raise RuntimeError("UNTESTED")
-        _ndens_1[:] = ndens # in this case, treat ndens as lower-state ndens
-        _n2g1_div_n1g2[:] = level_pop_arg.hi_div_lo * g_1 / g_2
+        #_ndens_1[:] = ndens # in this case, treat ndens as lower-state ndens
+        #_n2g1_div_n1g2[:] = level_pop_arg.hi_div_lo * g_1 / g_2
     else:
         raise ValueError("unallowed level_pops_arg")
 
