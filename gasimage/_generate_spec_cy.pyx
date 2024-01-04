@@ -8,6 +8,30 @@ from libc.math cimport exp as exp_f64
 from libc.math cimport sqrt as sqrt_f64
 from cpython.mem cimport PyMem_Malloc, PyMem_Free
 
+# CLEANUP ToDo List:
+# -> unify the interface a little more between _generate_ray_spectrum_cy and
+#    _generate_noscatter_spectrum_cy
+# -> add support for NdensStrategy.SpecialLegacySpinFlipCase to
+#    _generate_noscatter_spectrum_cy
+# -> simplify the doppler-parameter stuff... it's definitely too complicated
+#    we basically just have 2 branches:
+#    1. The branch where we compute b from kinetic temperature on the fly
+#    2. The branch where we precompute b on the grid
+# -> I think it would be sensible to consolidate all of the operations
+#    involving the kinetic temperature
+#
+# Optimization ideas:
+# -> it would make sense to make some kind of grid struct that tracks pointers
+#    to the 3D quantities (this is a can of worms... do we use memoryviews? Or,
+#    do we force all "fields" to have consistent strides?)
+#    - under this picture, we would skip the whole step of extracting into a 1D
+#      buffer. We would instead directly have the code extract the values from
+#      the 3D grid as they are needed
+#    - this would help with the hypothetical case where we eventually introduce
+#      higher order numerical integration with trilinear interpolation
+# -> of course this would all be easier to do if we started shifting this logic
+#    to c++ (for use of templates...)
+
 cdef extern from *:
     """
     #define INV_SQRT_PI 0.5641895835477563
