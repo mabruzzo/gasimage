@@ -698,11 +698,8 @@ def optically_thin_ppv(v_channels, ray_collection, ds,
     accum_strat = OpticallyThinAccumStrat(
         obs_freq = freq_from_v_channels(v_channels, line_props),
         use_cython_gen_spec = use_cython_gen_spec,
-        misc_kwargs = {
-            'rest_freq' : line_props.freq_quantity,
-            'doppler_parameter_b' : doppler_parameter_b,
-            'ndens_HI_n1state_field' : ndens_HI_n1state,
-        }
+        ndens_HI_n1state_field = ndens_HI_n1state,
+        doppler_parameter_b = doppler_parameter_b
     )
 
     out_dict = generate_image(

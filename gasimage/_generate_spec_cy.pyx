@@ -525,11 +525,11 @@ class NdensStrategy(Enum):
 
 
 def generate_ray_spectrum(grid, spatial_grid_props,
-                          full_ray_start, full_ray_uvec,
-                          rest_freq, obs_freq,
+                          full_ray_start, full_ray_uvec, line_props,
+                          legacy_optically_thin_spin_flip,
+                          particle_mass_in_grams, obs_freq,
+                          ndens_strat, ndens_field, partition_func = None,
                           doppler_parameter_b = None,
-                          ndens_HI_n1state_field = ('gas',
-                                                    'H_p0_number_density'),
                           out = None):
     # By default, ``ndens_HI_n1state_field`` is set to the yt-field specifying
     # the number density of all neutral Hydrogen. See the docstring of
@@ -543,16 +543,13 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     assert str(obs_freq.units) == 'Hz'
     cdef const double[::1] _obs_freq_Hz_view = obs_freq.ndview
 
-    line_props = default_spin_flip_props()
-    ndens_strat = NdensStrategy.SpecialLegacySpinFlipCase
-    partition_func = None
     if ndens_strat == NdensStrategy.IonNDensGrid_LTERatio:
         assert partition_func is not None
 
     # Prefetch some quantities and do some work to figure out unit conversions
     # ahead of time:
 
-    tmp_ndens = grid[ndens_HI_n1state_field]
+    tmp_ndens = grid[ndens_field]
     # get factor that must be multiplied by this ndens to convert to cm**-3
     ndens_to_cc_factor = float(tmp_ndens.uq.to('cm**-3').v)
     ndens_grid = tmp_ndens.ndview
@@ -568,11 +565,8 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     # now, get versions of velocity components without units
     vx, vy, vz = tmp_vx.ndview, tmp_vy.ndview, tmp_vz.ndview
 
-    legacy_optically_thin_spin_flip = True
-
     if legacy_optically_thin_spin_flip:
         assert ndens_strat == NdensStrategy.SpecialLegacySpinFlipCase
-        particle_mass_in_grams = MH_CGS
         nrays = full_ray_uvec.shape[0]
         if out is not None:
             assert out.shape == (nrays, obs_freq.size)
@@ -582,7 +576,6 @@ def generate_ray_spectrum(grid, spatial_grid_props,
         assert out is None
         if ndens_strat != NdensStrategy.SpecialLegacySpinFlipCase:
             raise NotImplementedError("THIS CASE ISN'T SUPPORTED YET!")
-        raise ValueError("Need particle_mass_in_grams!")
 
     # in certain cases, we don't need to load the temperature field... It may
     # be useful to avoid loading it in these cases (to handle cases where the

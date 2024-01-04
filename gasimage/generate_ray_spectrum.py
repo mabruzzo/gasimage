@@ -189,8 +189,7 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI_n1state,
         raise RuntimeError("support hasn't been added for this configuration")
 
 def generate_ray_spectrum_legacy(grid, spatial_grid_props,
-                                 full_ray_start, full_ray_uvec,
-                                 rest_freq, obs_freq,
+                                 full_ray_start, full_ray_uvec, obs_freq,
                                  doppler_parameter_b = None,
                                  ndens_HI_n1state_field = ('gas',
                                                            'H_p0_number_density'),

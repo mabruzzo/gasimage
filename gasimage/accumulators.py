@@ -40,11 +40,12 @@ import unyt
 
 from .generate_ray_spectrum import generate_ray_spectrum_legacy
 from ._generate_spec_cy import (
+    NdensStrategy,
     generate_ray_spectrum,
     generate_noscatter_ray_spectrum
 )
 from .ray_traversal.spatial_grid_props import SpatialGridProps
-from .rt_config import LineProperties
+from .rt_config import LineProperties, default_spin_flip_props
 
 # define the actual AccumStratT typing stub
 AccumStratT = TypeVar("AccumStratT")
@@ -89,6 +90,9 @@ def _validate_basic_quan_props(accum, rslt):
                 f"have a shape of {shape}, not of {rslt[name].shape}"
             )
 
+
+_DFLT_ndens_HI_n1 = ('gas', 'H_p0_number_density')
+
 class OpticallyThinAccumStrat:
     """
     Represents the configuration of the operations associated with optically
@@ -103,8 +107,8 @@ class OpticallyThinAccumStrat:
     # instance attributes:
     obs_freq_Hz: np.ndarray
     use_cython_gen_spec: bool
-    # todo remove misc_kwargs and replace with more details
-    misc_kwargs: Dict[str, Any]
+    ndens_HI_n1state_field: Tuple[str,str]
+    doppler_parameter_b: Any
 
     # class attributes:
     name = "opticallyThin21cm"
@@ -112,7 +116,8 @@ class OpticallyThinAccumStrat:
 
     def __init__(self, *, obs_freq: unyt.unyt_array,
                  use_cython_gen_spec: bool,
-                 misc_kwargs: Dict[str, Any] = {}):
+                 ndens_HI_n1state_field: Tuple[str,str],
+                 doppler_parameter_b: Any):
         assert np.ndim(obs_freq) == 1
         assert (obs_freq.size > 0) and (obs_freq.ndview > 0).all()
         # make obs_freq_Hz as immutable as possible
@@ -120,11 +125,8 @@ class OpticallyThinAccumStrat:
         self.obs_freq_Hz.flags['WRITEABLE'] = False
 
         self.use_cython_gen_spec = use_cython_gen_spec
-        self.misc_kwargs = misc_kwargs
-        for key in ['obs_freq', 'grid', 'out', 'ray_start', 'ray_uvec',
-                    'full_ray_start', 'full_ray_uvec']:
-            if key in misc_kwargs:
-                raise ValueError(f"'{key}' should not be a key of misc_kwargs")
+        self.ndens_HI_n1state_field = ndens_HI_n1state_field
+        self.doppler_parameter_b = doppler_parameter_b
 
     def do_work(self, grid, spatial_grid_props, full_ray_start, full_ray_uvec):
 
@@ -134,15 +136,28 @@ class OpticallyThinAccumStrat:
 
         if self.use_cython_gen_spec:
             generate_ray_spectrum(
-                grid = grid, spatial_grid_props = spatial_grid_props,
-                full_ray_start = full_ray_start, full_ray_uvec = full_ray_uvec,
-                obs_freq = obs_freq, out = out, **self.misc_kwargs
+                grid = grid,
+                spatial_grid_props = spatial_grid_props,
+                full_ray_start = full_ray_start,
+                full_ray_uvec = full_ray_uvec,
+                line_props = default_spin_flip_props(),
+                legacy_optically_thin_spin_flip = True,
+                obs_freq = obs_freq,
+                particle_mass_in_grams = unyt.mh_cgs.v,
+                ndens_strat = NdensStrategy.SpecialLegacySpinFlipCase,
+                ndens_field = self.ndens_HI_n1state_field,
+                partition_func = None,
+                doppler_parameter_b = self.doppler_parameter_b,
+                out = out,
             )
         else:
             generate_ray_spectrum_legacy(
                 grid = grid, spatial_grid_props = spatial_grid_props,
                 full_ray_start = full_ray_start, full_ray_uvec = full_ray_uvec,
-                obs_freq = obs_freq, out = out, **self.misc_kwargs
+                obs_freq = obs_freq,
+                ndens_HI_n1state_field = self.ndens_HI_n1state_field,
+                out = out,
+                doppler_parameter_b = self.doppler_parameter_b
             )
 
         return out
