@@ -825,19 +825,18 @@ cdef struct IntegralStructNoScatterRT:
     double* segStart_expNegTau
 
 cdef IntegralStructNoScatterRT prep_IntegralStructNoScatterRT(
-    double[::1] total_tau, double[::1] integrated_source):
+    Py_ssize_t nfreq, double* total_tau, double* integrated_source):
     # the nfreq field of the resulting struct is set to 0 if this function
     # encounters issues
 
     cdef IntegralStructNoScatterRT out
-    if ((total_tau.shape[0] == 0) or
-        (total_tau.shape[0] != integrated_source.shape[0])):
+    if (nfreq == 0):
         out.nfreq = 0
         return out
 
-    out.nfreq = total_tau.shape[0]
-    out.total_tau = &total_tau[0]
-    out.integrated_source = &integrated_source[0]
+    out.nfreq = nfreq
+    out.total_tau = total_tau
+    out.integrated_source = integrated_source
     out.segStart_expNegTau = <double*> PyMem_Malloc(sizeof(double) * out.nfreq)
     if out.segStart_expNegTau == NULL:
         out.nfreq = 0
@@ -980,9 +979,7 @@ cdef Ndens_And_Ratio ndens_and_ratio_from_partition(
 # 3. Modify the doppler-parameter calculation to happen on the fly (since we
 #    are already passing in the kinetic temperature anyways)
 
-@cython.wraparound(False)
-@cython.boundscheck(False)
-@cython.cdivision(True)
+
 def _generate_noscatter_spectrum_cy(object line_props,
                                     const double[::1] obs_freq,
                                     const double[::1] vLOS,
@@ -1056,8 +1053,36 @@ def _generate_noscatter_spectrum_cy(object line_props,
         and such that it increases as we move backwards along the ray (i.e. it
         increases with distance from the observer)
     """
-    cdef Py_ssize_t num_segments = dz.size
-    cdef Py_ssize_t pos_i, freq_i # indexing variables
+    cdef PyLinInterpPartitionFunc partition_fn
+    cdef LinInterpPartitionFn partition_fn_pack
+
+    if isinstance(level_pops_arg, PyLinInterpPartitionFunc):
+        partition_fn = <PyLinInterpPartitionFunc>level_pops_arg
+        partition_fn_pack = partition_fn.get_partition_fn_struct()
+        errcode = _generate_noscatter_spectrum_impl(
+            line_props, obs_freq.shape[0], &obs_freq[0],
+            dz.shape[0], &vLOS[0], &ndens[0], &kinetic_T[0],
+            &doppler_parameter_b[0], &dz[0],
+            partition_fn_pack,
+            &out_integrated_source[0], &out_tau[0])
+    else:
+        raise ValueError("unallowed/untested level_pops_arg")
+
+    if errcode != 0:
+        raise RuntimeError("SOMETHING WENT WRONG")
+
+cdef int _generate_noscatter_spectrum_impl(object line_props,
+                                           const Py_ssize_t nfreq,
+                                           const double* obs_freq,
+                                           const Py_ssize_t num_segments,
+                                           const double* vLOS,
+                                           const double* ndens,
+                                           const double* kinetic_T,
+                                           const double* doppler_parameter_b,
+                                           const double* dz,
+                                           const LinInterpPartitionFn partition_fn_pack,
+                                           double* out_integrated_source,
+                                           double* out_tau):
 
     # load transition properties:
     cdef double rest_freq_Hz = line_props.freq_Hz
@@ -1070,30 +1095,18 @@ def _generate_noscatter_spectrum_cy(object line_props,
     cdef double g_1 = float(line_props.g_lo)
     cdef double g_2 = float(line_props.g_hi)
 
-    cdef PyLinInterpPartitionFunc partition_fn
-    cdef LinInterpPartitionFn partition_fn_pack
-
-    if isinstance(level_pops_arg, PyLinInterpPartitionFunc):
-        partition_fn = <PyLinInterpPartitionFunc>level_pops_arg
-        partition_fn_pack = partition_fn.get_partition_fn_struct()
-    else:
-        raise ValueError("unallowed/untested level_pops_arg")
-
-    # Down below we actually perform the integral!
-
-    cdef Py_ssize_t nfreq = obs_freq.shape[0]
-
     cdef IntegralStructNoScatterRT accumulator = \
-        prep_IntegralStructNoScatterRT(out_tau, out_integrated_source)
+        prep_IntegralStructNoScatterRT(nfreq, out_tau, out_integrated_source)
 
     if accumulator.nfreq < 1:
-        raise RuntimeError("Problem with initializing the accumulator!")
+        return 1 # Problem with initializing the accumulator!
 
     cdef double rest_freq3 = rest_freq_Hz*rest_freq_Hz*rest_freq_Hz
     cdef double source_func_numerator = (2*HPLANCK_CGS * rest_freq3 /
                                          (C_CGS * C_CGS))
 
     # temproray variables used within the loop:
+    cdef Py_ssize_t pos_i, freq_i # indexing variables
     cdef LineProfileStruct prof
     cdef Ndens_And_Ratio pair
     cdef double profile_val, alpha_center, stim_emission_correction
@@ -1114,9 +1127,6 @@ def _generate_noscatter_spectrum_cy(object line_props,
                 kinetic_T = kinetic_T[pos_i], ndens_ion_species = ndens[pos_i],
                 g_1 = g_1, energy_1_erg = line_props.energy_lo_erg,
                 rest_freq_Hz = rest_freq_Hz)
-        else:
-            tmp_pair.ndens_1 = ndens[pos_i]
-            #tmp_pair.n2g1_div_n1g2 = level_pop_arg.hi_div_lo * g_1 / g_2
 
         # Using equations 1.78 and 1.79 of Rybicki and Lighman to get
         # - absorption coefficient (with units of cm**-1), including the
@@ -1178,5 +1188,4 @@ def _generate_noscatter_spectrum_cy(object line_props,
     clean_IntegralStructNoScatterRT(accumulator)
     PyMem_Free(alpha_nu_cgs)
 
-    # these output arrays were updated within accumulator!
-    #return out_integrated_source, out_tau
+    return 0
