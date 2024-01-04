@@ -937,38 +937,33 @@ cdef void clean_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj):
 class NdensRatio:
     hi_div_lo: np.ndarray
 
+cdef struct Ndens_And_Ratio:
+    double ndens_1
+    double n2g1_div_n1g2
+
 @cython.wraparound(False)
 @cython.boundscheck(False)
 @cython.cdivision(True)
-cdef void ndens_and_ratio_from_partition(double[::1] ndens_1,
-                                         double[::1] n2g1_div_n1g2,
-                                         PyLinInterpPartitionFunc partition_fn,
-                                         const double[::1] kinetic_T,
-                                         const double[::1] ndens_ion_species,
-                                         const double g_1,
-                                         const double energy_1_erg,
-                                         const double rest_freq_Hz,
-                                         const Py_ssize_t num_segments):
+cdef Ndens_And_Ratio ndens_and_ratio_from_partition(
+    LinInterpPartitionFn partition_fn_pack, double kinetic_T,
+    double ndens_ion_species, double g_1, double energy_1_erg,
+    double rest_freq_Hz):
+
     cdef double restframe_energy_photon_erg = rest_freq_Hz * HPLANCK_CGS
-    cdef double beta_cgs
+    cdef double beta_cgs = 1.0 / (kinetic_T * KBOLTZ_CGS)
 
-    cdef LinInterpPartitionFn partition_fn_pack \
-        = partition_fn.get_partition_fn_struct()
+    cdef Ndens_And_Ratio out
 
-    for pos_i in range(num_segments):
-        # thermodynamic beta
-        beta_cgs = 1.0 / (kinetic_T[pos_i] * KBOLTZ_CGS)
+    out.ndens_1 = (
+        ndens_ion_species * g_1 * exp_f64(-energy_1_erg * beta_cgs)
+        / eval_partition_fn(partition_fn_pack, kinetic_T) 
+    )
 
-        ndens_1[pos_i] = (
-            ndens_ion_species[pos_i] * g_1 * exp_f64(-energy_1_erg * beta_cgs)
-            / eval_partition_fn(partition_fn_pack, kinetic_T[pos_i]) 
-        )
-
-        # n1/n2 = (g1/g2) * exp(restframe_energy_photon_cgs * beta_cgs)
-        # n2/n1 = (g2/g1) * exp(-restframe_energy_photon_cgs * beta_cgs)
-        # (n2*g1)/(n1*g2) = exp(-restframe_energy_photon_cgs * beta_cgs)
-        n2g1_div_n1g2[pos_i] = exp_f64(-1 * restframe_energy_photon_erg *
-                                       beta_cgs)
+    # n1/n2 = (g1/g2) * exp(restframe_energy_photon_cgs * beta_cgs)
+    # n2/n1 = (g2/g1) * exp(-restframe_energy_photon_cgs * beta_cgs)
+    # (n2*g1)/(n1*g2) = exp(-restframe_energy_photon_cgs * beta_cgs)
+    out.n2g1_div_n1g2 = exp_f64(-1 * restframe_energy_photon_erg * beta_cgs)
+    return out
 
 # further optimization ideas:
 # 1. don't allow level_pops_arg to be an arbitrary python object
@@ -1075,31 +1070,14 @@ def _generate_noscatter_spectrum_cy(object line_props,
     cdef double g_1 = float(line_props.g_lo)
     cdef double g_2 = float(line_props.g_hi)
 
-    # allocate & precompute both ndens_1 & n2g1_div_n1g2
-    _ndens_1 = np.empty(shape = (num_segments,), dtype = 'f8')
-    cdef double[::1] ndens_1 = _ndens_1
-    _n2g1_div_n1g2 = np.empty(shape = (num_segments,), dtype = 'f8')
-    cdef double[::1] n2g1_div_n1g2 = _n2g1_div_n1g2
+    cdef PyLinInterpPartitionFunc partition_fn
+    cdef LinInterpPartitionFn partition_fn_pack
 
     if isinstance(level_pops_arg, PyLinInterpPartitionFunc):
-        # in this case:
-        # -> treat level_pops_arg as partition function
-        # -> treat ndens as number density of particles described by partition
-        #    function
-        # -> assume LTE
-
-        ndens_and_ratio_from_partition(
-            ndens_1 = ndens_1, n2g1_div_n1g2 = n2g1_div_n1g2,
-            partition_fn = <PyLinInterpPartitionFunc>level_pops_arg,
-            kinetic_T = kinetic_T, ndens_ion_species = ndens,
-            g_1 = g_1, energy_1_erg = line_props.energy_lo_erg,
-            rest_freq_Hz = rest_freq_Hz, num_segments = num_segments)
-    elif isinstance(level_pops_arg, NdensRatio):
-        raise RuntimeError("UNTESTED")
-        #_ndens_1[:] = ndens # in this case, treat ndens as lower-state ndens
-        #_n2g1_div_n1g2[:] = level_pop_arg.hi_div_lo * g_1 / g_2
+        partition_fn = <PyLinInterpPartitionFunc>level_pops_arg
+        partition_fn_pack = partition_fn.get_partition_fn_struct()
     else:
-        raise ValueError("unallowed level_pops_arg")
+        raise ValueError("unallowed/untested level_pops_arg")
 
     # Down below we actually perform the integral!
 
@@ -1117,11 +1095,28 @@ def _generate_noscatter_spectrum_cy(object line_props,
 
     # temproray variables used within the loop:
     cdef LineProfileStruct prof
+    cdef Ndens_And_Ratio pair
     cdef double profile_val, alpha_center, stim_emission_correction
     cdef double source_func_cgs
     cdef double* alpha_nu_cgs = <double*> PyMem_Malloc(sizeof(double) * nfreq)
 
     for pos_i in range(num_segments):
+
+        if True:
+            # in this case:
+            # -> treat level_pops_arg as partition function
+            # -> treat ndens as number density of particles described by
+            #    partition function
+            # -> assume LTE
+
+            tmp_pair = ndens_and_ratio_from_partition(
+                partition_fn_pack = partition_fn_pack,
+                kinetic_T = kinetic_T[pos_i], ndens_ion_species = ndens[pos_i],
+                g_1 = g_1, energy_1_erg = line_props.energy_lo_erg,
+                rest_freq_Hz = rest_freq_Hz)
+        else:
+            tmp_pair.ndens_1 = ndens[pos_i]
+            #tmp_pair.n2g1_div_n1g2 = level_pop_arg.hi_div_lo * g_1 / g_2
 
         # Using equations 1.78 and 1.79 of Rybicki and Lighman to get
         # - absorption coefficient (with units of cm**-1), including the
@@ -1132,9 +1127,9 @@ def _generate_noscatter_spectrum_cy(object line_props,
 
         # first compute alpha at the line-center (ignoring broadening profile)
         # & then compute alpha as a function of frequency:
-        stim_emission_correction = (1.0 - n2g1_div_n1g2[pos_i])
-        alpha_center = (HPLANCK_CGS * rest_freq_Hz * ndens_1[pos_i] * B12_cgs *
-                        stim_emission_correction) / (4*np.pi)
+        stim_emission_correction = (1.0 - tmp_pair.n2g1_div_n1g2)
+        alpha_center = (HPLANCK_CGS * rest_freq_Hz * tmp_pair.ndens_1 *
+                        B12_cgs * stim_emission_correction) / (4*np.pi)
 
         # construct the profile for the current gas-element
         prof = prep_LineProfHelper(rest_freq_Hz, doppler_parameter_b[pos_i],
@@ -1145,7 +1140,7 @@ def _generate_noscatter_spectrum_cy(object line_props,
             alpha_nu_cgs[freq_i] = alpha_center * profile_val
 
         source_func_cgs = (
-            source_func_numerator / ((1.0/n2g1_div_n1g2[pos_i]) - 1.0)
+            source_func_numerator / ((1.0/tmp_pair.n2g1_div_n1g2) - 1.0)
         )
 
         # FREQUENCY AMBIGUITIES:
