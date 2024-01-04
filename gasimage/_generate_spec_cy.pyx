@@ -490,6 +490,40 @@ def _calc_doppler_parameter_b(grid, idx3Darr, approach = None,
         raise RuntimeError("SOMETHING IS WRONG")
     return out * (unyt.cm/unyt.s)
 
+
+from enum import Enum
+
+class NdensStrategy(Enum):
+    """
+    This specifies the "strategy" when it comes to number density.
+
+    To be a little more clear:
+      - this specifies the interpretation of the ndens field
+      - it also specifies how we compute the ratio of the number densities
+        of the absorbers and emitters
+    """
+
+    IonNDensGrid_LTERatio = 1
+    # we have implemented the above case
+    # -> the grid has a field for the total number density of the ion species.
+    # -> the user must provide a partition function; it is used to compute the
+    #    number density of the absorber (assuming LTE)
+    # -> the number-density ratio is assumed
+
+    # These are 2 variants I hope to support in the future...
+    #AbsorberNDensGrid_LTERatio = 2
+    #AbsorberNDensGrid_ArbitraryRatio = 3
+    # -> this case would be nice to have... This is the most generic case!
+
+    SpecialLegacySpinFlipCase = 4
+    # this is what we have traditionally used in the optically-thin case
+    # -> we effectively assume that the number density field gives the
+    #    number-density of Hydrogen in the electronic ground state (n = 1).
+    #    This is the sum of the number densities in the spin 0 and spin 1 states
+    # -> we assume that the ratio of number densities is directly given by the
+    #    statistical weights...
+
+
 def generate_ray_spectrum(grid, spatial_grid_props,
                           full_ray_start, full_ray_uvec,
                           rest_freq, obs_freq,
@@ -509,13 +543,19 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     assert str(obs_freq.units) == 'Hz'
     cdef const double[::1] _obs_freq_Hz_view = obs_freq.ndview
 
+    line_props = default_spin_flip_props()
+    ndens_strat = NdensStrategy.SpecialLegacySpinFlipCase
+    partition_func = None
+    if ndens_strat == NdensStrategy.IonNDensGrid_LTERatio:
+        assert partition_func is not None
+
     # Prefetch some quantities and do some work to figure out unit conversions
     # ahead of time:
 
-    tmp_ndens_HI_n1state_grid = grid[ndens_HI_n1state_field]
+    tmp_ndens = grid[ndens_HI_n1state_field]
     # get factor that must be multiplied by this ndens to convert to cm**-3
-    ndens_to_cc_factor = float(tmp_ndens_HI_n1state_grid.uq.to('cm**-3').v)
-    ndens_HI_n1state_grid = tmp_ndens_HI_n1state_grid.ndview
+    ndens_to_cc_factor = float(tmp_ndens.uq.to('cm**-3').v)
+    ndens_grid = tmp_ndens.ndview
 
     # load in velocity information:
 
@@ -531,6 +571,7 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     legacy_optically_thin_spin_flip = True
 
     if legacy_optically_thin_spin_flip:
+        assert ndens_strat == NdensStrategy.SpecialLegacySpinFlipCase
         particle_mass_in_grams = MH_CGS
         nrays = full_ray_uvec.shape[0]
         if out is not None:
@@ -539,6 +580,8 @@ def generate_ray_spectrum(grid, spatial_grid_props,
             out = np.empty(shape = (nrays, obs_freq.size), dtype = np.float64)
     else:
         assert out is None
+        if ndens_strat != NdensStrategy.SpecialLegacySpinFlipCase:
+            raise NotImplementedError("THIS CASE ISN'T SUPPORTED YET!")
         raise ValueError("Need particle_mass_in_grams!")
 
     # in certain cases, we don't need to load the temperature field... It may
@@ -558,32 +601,35 @@ def generate_ray_spectrum(grid, spatial_grid_props,
         legacy_optically_thin_spin_flip = legacy_optically_thin_spin_flip,
         spatial_grid_props = spatial_grid_props,
         full_ray_start = full_ray_start, full_ray_uvec = full_ray_uvec,
-        line_props = default_spin_flip_props(),
+        line_props = line_props, ndens_strat = ndens_strat,
         obs_freq_Hz = _obs_freq_Hz_view,
         vx = vx, vy = vy, vz = vz,
         vel_to_cm_per_s_factor = vel_to_cm_per_s_factor,
         doppler_parameter_b = doppler_parameter_b,
-        ndens_HI_n1state_grid = ndens_HI_n1state_grid,
+        ndens_grid = ndens_grid,
         ndens_to_cc_factor = ndens_to_cc_factor,
         kinetic_T_grid = kinetic_T.ndview,
         kinetic_T_to_K_factor = kinetic_T_to_K_factor,
+        partition_func = partition_func,
         out = out)
 
 
 def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                            object spatial_grid_props,
                            object full_ray_start, object full_ray_uvec,
-                           object line_props,
+                           object line_props, object ndens_strat,
                            double[::1] obs_freq_Hz,
                            double[:,:,::1] vx, double[:,:,::1] vy,
                            double[:,:,::1] vz,
                            double vel_to_cm_per_s_factor,
                            FusedDopplerParameterType doppler_parameter_b,
-                           double[:,:,::1] ndens_HI_n1state_grid,
+                           double[:,:,::1] ndens_grid,
                            double ndens_to_cc_factor,
                            double[:,:,::1] kinetic_T_grid,
                            double kinetic_T_to_K_factor,
+                           object partition_func,
                            double[:,::1] out):
+    # this function sure has a lot of arguments...
 
     cdef list out_l = []
 
@@ -605,7 +651,7 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
         for k in ['vlos', 'ndens', 'kinetic_T', 'doppler_parameter'])
 
     cdef double[::1] vlos = npy_buffers['vlos']
-    cdef double[::1] ndens_HI_n1state = npy_buffers['ndens']
+    cdef double[::1] ndens = npy_buffers['ndens']
     cdef double[::1] kinetic_T = npy_buffers['kinetic_T']
     cdef double[::1] cur_doppler_parameter_b = npy_buffers['doppler_parameter']
 
@@ -652,30 +698,34 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                         cur_uvec_view[2] * vz[i0,i1,i2]
                     ) * vel_to_cm_per_s_factor
 
-                    ndens_HI_n1state[j] = (ndens_HI_n1state_grid[i0,i1,i2] *
-                                           ndens_to_cc_factor)
+                    ndens[j] = (ndens_grid[i0,i1,i2] * ndens_to_cc_factor)
                     kinetic_T[j] = (kinetic_T_grid[i0,i1,i2] *
                                     kinetic_T_to_K_factor)
 
             if legacy_optically_thin_spin_flip:
+                # SANITY CHECK:
+                assert ndens_strat == NdensStrategy.SpecialLegacySpinFlipCase
+                
                 _generate_ray_spectrum_cy(
                     obs_freq = obs_freq_Hz, velocities = vlos,
-                    ndens_HI_n1state = ndens_HI_n1state,
+                    ndens_HI_n1state = ndens,
                     doppler_parameter_b = cur_doppler_parameter_b,
                     rest_freq = _rest_freq_Hz, dz = dz,
                     A10_Hz = _A_Hz,
                     out = out[i,:])
             else: # NOT TESTED YET!!!
+                # sanity check!
+                assert ndens_strat == NdensStrategy.SpecialLegacySpinFlipCase
+                
                 tmp = _generate_noscatter_spectrum_cy(
                     line_props = line_props,
                     obs_freq = obs_freq_Hz,
                     vLOS = vlos,
-                    #ndens = ndens,
-                    ndens = None,
+                    ndens = ndens,
                     kinetic_T = kinetic_T,
                     doppler_parameter_b = cur_doppler_parameter_b,
                     dz = dz,
-                    level_pops_arg = None)#partition_func)
+                    level_pops_arg = partition_func)
                 out_l.append({'integrated_source' : tmp[0],
                               'total_tau' : tmp[1]})
     except:
@@ -856,19 +906,7 @@ cdef void clean_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj):
 
 
 
-from enum import Enum
 
-class NdensStrategy(Enum):
-    IonNDensGrid_LTERatio = 1
-    # -> we have implemented the above case
-    # -> the grid has a field for the total number density of the ion species
-    # -> the user must provide a partition function
-
-    #AbsorberNDensGrid_LTERatio = 2
-    #AbsorberNDensGrid_ArbitraryRatio = 3
-    # -> this case would be nice to have... This is the most generic case!
-
-    SpecialSpinFlipCase = 4
 
 def generate_noscatter_ray_spectrum(
         grid, spatial_grid_props,
