@@ -544,7 +544,7 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     return _generate_ray_spectrum(
         spatial_grid_props = spatial_grid_props,
         full_ray_start = full_ray_start, full_ray_uvec = full_ray_uvec,
-        rest_freq = rest_freq,
+        line_props = default_spin_flip_props(),
         obs_freq_Hz = _obs_freq_Hz_view,
         vx = vx, vy = vy, vz = vz,
         vel_to_cm_per_s_factor = vel_to_cm_per_s_factor,
@@ -556,7 +556,7 @@ def generate_ray_spectrum(grid, spatial_grid_props,
 
 def _generate_ray_spectrum(object spatial_grid_props,
                            object full_ray_start, object full_ray_uvec,
-                           object rest_freq,
+                           object line_props,
                            double[::1] obs_freq_Hz,
                            double[:,:,::1] vx, double[:,:,::1] vy,
                            double[:,:,::1] vz,
@@ -566,9 +566,11 @@ def _generate_ray_spectrum(object spatial_grid_props,
                            double ndens_to_cc_factor,
                            double[:,::1] out):
 
-    spin_flip_props = default_spin_flip_props()
-    cdef double _A10_Hz = float(spin_flip_props.A_quantity.to('Hz').v)
-    cdef double _rest_freq_Hz = float(spin_flip_props.freq_quantity.to('Hz').v)
+    cdef bint legacy_optically_thin_spin_flip = True
+    cdef list out_l = []
+
+    cdef double _A_Hz = float(line_props.A_quantity.to('Hz').v)
+    cdef double _rest_freq_Hz = float(line_props.freq_quantity.to('Hz').v)
 
     cdef Py_ssize_t nrays = full_ray_uvec.shape[0]
     cdef Py_ssize_t i, j
@@ -598,6 +600,7 @@ def _generate_ray_spectrum(object spatial_grid_props,
     #   avoid using numpy's fancy-indexing and directly index ourselves
 
     try:
+        # loop over the rays
         for i in range(nrays):
             ray_start = full_ray_start[i,:]
             ray_uvec = full_ray_uvec[i,:]
@@ -628,18 +631,39 @@ def _generate_ray_spectrum(object spatial_grid_props,
                         cur_uvec_view[2] * vz[i0,i1,i2]
                     ) * vel_to_cm_per_s_factor
 
+            if legacy_optically_thin_spin_flip:
+                for j in range(dz.size):
+                    i0 = idx3D_view[0,j]
+                    i1 = idx3D_view[1,j]
+                    i2 = idx3D_view[2,j]
+
                     ndens_HI_n1state[j] = (ndens_HI_n1state_grid[i0,i1,i2] *
                                            ndens_to_cc_factor)
 
-            _generate_ray_spectrum_cy(
-                obs_freq = obs_freq_Hz,
-                velocities = vlos,
-                ndens_HI_n1state = ndens_HI_n1state,
-                doppler_parameter_b = cur_doppler_parameter_b,
-                rest_freq = _rest_freq_Hz,
-                dz = dz,
-                A10_Hz = _A10_Hz,
-                out = out[i,:])
+                _generate_ray_spectrum_cy(
+                    obs_freq = obs_freq_Hz,
+                    velocities = vlos,
+                    ndens_HI_n1state = ndens_HI_n1state,
+                    doppler_parameter_b = cur_doppler_parameter_b,
+                    rest_freq = _rest_freq_Hz,
+                    dz = dz,
+                    A10_Hz = _A_Hz,
+                    out = out[i,:])
+            else:
+                # NOT TESTED YET!!!
+                
+                tmp = _generate_noscatter_spectrum_cy(
+                    line_props = line_props,
+                    obs_freq = obs_freq_Hz,
+                    vLOS = vlos,
+                    #ndens = ndens,
+                    ndens = None,
+                    kinetic_T = None,
+                    doppler_parameter_b = cur_doppler_parameter_b,
+                    dz = dz,
+                    level_pops_arg = None)#partition_func)
+                out_l.append({'integrated_source' : tmp[0],
+                              'total_tau' : tmp[1]})
     except:
         print(
             "There was a problem!",
@@ -649,7 +673,12 @@ def _generate_ray_spectrum(object spatial_grid_props,
             sep = '\n  '
         )
         raise
-    return out
+
+
+    if legacy_optically_thin_spin_flip:
+        return out
+    else:
+        return out_l
 
 
 ####### DOWN HERE WE DEFINE STUFF RELATED TO FULL (NO-SCATTER) RT
@@ -1026,7 +1055,7 @@ def _generate_noscatter_spectrum_cy(object line_props,
                                     const double[::1] obs_freq,
                                     const double[::1] vLOS,
                                     const double[::1] ndens,
-                                    object kinetic_T,
+                                    const double[::1] kinetic_T,
                                     const double[::1] doppler_parameter_b,
                                     const double[::1] dz,
                                     object level_pops_arg):
