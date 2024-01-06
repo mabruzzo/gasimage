@@ -32,16 +32,9 @@ from cpython.mem cimport PyMem_Malloc, PyMem_Free
 # -> of course this would all be easier to do if we started shifting this logic
 #    to c++ (for use of templates...)
 
-cdef extern from *:
-    """
-    #define INV_SQRT_PI 0.5641895835477563
-    #define QUARTER_DIV_PI 0.07957747154594767
-    // define some Macros equal to some yt-constants
-    #define C_CGS 29979245800.0            /* yt.units.c_cgs */
-    #define HPLANCK_CGS 6.62606957e-27     /* yt.units.h_cgs */
-    #define MH_CGS 1.6737352238051868e-24  /* yt.units.mh_cgs */
-    #define KBOLTZ_CGS 1.3806488e-16       /* yt.units.kboltz_cgs */
-    """
+cdef extern from "cpp/stuff.hpp":
+
+    # these are all some constants defined in the included header
     double INV_SQRT_PI
     double QUARTER_DIV_PI
     double C_CGS
@@ -49,8 +42,13 @@ cdef extern from *:
     double MH_CGS
     double KBOLTZ_CGS
 
+    struct C_LineProps:
+        int g_lo
+        int g_hi
+        double freq_Hz # rest frequency
+        double energy_lo_erg # energy of the lower state
+        double B12_cgs
 
-cdef extern from "cpp/stuff.hpp":
     struct LinInterpPartitionFn:
         const double* log10_T
         const double* log10_partition
@@ -58,7 +56,40 @@ cdef extern from "cpp/stuff.hpp":
 
     double eval_partition_fn(const LinInterpPartitionFn& pack,
                              double T_val)
-        
+
+    struct Ndens_And_Ratio:
+        double ndens_1
+        double n2g1_div_n1g2
+
+    Ndens_And_Ratio ndens_and_ratio_from_partition(
+        LinInterpPartitionFn partition_fn_pack, double kinetic_T,
+        double ndens_ion_species, C_LineProps line_props)
+
+    struct IntegralStructNoScatterRT:
+        long nfreq
+        double* total_tau
+        double* integrated_source
+        double* segStart_expNegTau
+
+    IntegralStructNoScatterRT prep_IntegralStructNoScatterRT(
+        long nfreq, double* total_tau, double* integrated_source
+    )
+
+    void update_IntegralStructNoScatterRT(const IntegralStructNoScatterRT& obj,
+                                          const double* absorption_coef,
+                                          double source_function, double dz)
+
+    void clean_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj)
+
+cdef C_LineProps get_LineProps_struct(object line_props) except *:
+    # this converts the LineProps class into C_LineProps
+    cdef C_LineProps out
+    out.g_lo = line_props.g_lo
+    out.g_hi = line_props.g_hi
+    out.freq_Hz = line_props.freq_Hz
+    out.energy_lo_erg = line_props.energy_lo_erg
+    out.B12_cgs = line_props.B_absorption_cgs
+    return out
 
 def _nosubtype_isinstance(obj, classinfo):
     return isinstance(obj, classinfo) and obj.__class__ == np.ndarray
@@ -775,194 +806,8 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
 
 ####### DOWN HERE WE DEFINE STUFF RELATED TO FULL (NO-SCATTER) RT
 
-"""
-The following struct is used to solve for the optical depth and the integrated
-source_function diminished by absorption.
-
-Notes
------
-Our definition of optical depth, differs from Rybicki and Lightman. They
-would define the maximum optical depth at the observer's location. Our
-choice of definition is a little more consistent with the choice used in
-the context of stars.
-
-We are essentially solving the following 2 equations:
-
-.. math::
-
-  \tau_\nu (s) = \int_{s}^{s_0} \alpha_\nu(s^\prime)\, ds^\prime
-
-and
-
-.. math::
-
-  I_\nu (\tau_\nu=0) =  I_\nu(\tau_\nu)\, e^{-\tau_\nu} + f,
-
-where :math:`f`, the integral term, is given by:
-
-.. math::
-
-  f = -\int_{\tau_\nu}^0  S_\nu(\tau_\nu^\prime)\, e^{-\tau_\nu^\prime}\, d\tau_\nu^\prime.
-
-"""
-
-# We construct a new IntegralStructNoScatterRT for every ray
-# -> it essentially tracks the output variables and the scratch-space used
-#    while performing the integral
-# -> in the future, I would like to make this a c++ class
-cdef struct IntegralStructNoScatterRT:
-    # this specifies the length of all pointers held by this struct
-    Py_ssize_t nfreq
-
-    # the next 2 variables are accumulator variables that serve as outputs
-    # -> they each accumulate values separately for each considered frequency
-    # -> their lifetimes are externally managed
-    double* total_tau
-    double* integrated_source
-
-    # this last variable is managed by the struct (we use it to cache
-    # expensive exponential evaluations)
-    double* segStart_expNegTau
-
-cdef IntegralStructNoScatterRT prep_IntegralStructNoScatterRT(
-    Py_ssize_t nfreq, double* total_tau, double* integrated_source):
-    # the nfreq field of the resulting struct is set to 0 if this function
-    # encounters issues
-
-    cdef IntegralStructNoScatterRT out
-    if (nfreq == 0):
-        out.nfreq = 0
-        return out
-
-    out.nfreq = nfreq
-    out.total_tau = total_tau
-    out.integrated_source = integrated_source
-    out.segStart_expNegTau = <double*> PyMem_Malloc(sizeof(double) * out.nfreq)
-    if out.segStart_expNegTau == NULL:
-        out.nfreq = 0
-
-    # finally, lets initialize total_tau & segStart_expNegTau so that they have
-    # the correct values for the start of the integral
-    # -> essentially, we need to initialize the value at the end of the ray
-    #    closest to the observer
-    # -> by convention, we define the tau at this location to have an optical
-    #    depth of zeros at all frequencies (we can always increase the optical
-    #    depth used here after we finish the integral)
-    # we also set integrated_source to have values of 0.0
-    cdef Py_ssize_t freq_i
-    for freq_i in range(out.nfreq):
-        out.total_tau[freq_i] = 0.0
-        out.segStart_expNegTau[freq_i] = 1.0 # = exp_f64(-out.total_tau[freq_i])
-        out.integrated_source[freq_i] = 0.0
-    return out
-
-
-# this function effectively updates the tracked integral (at all frequencies,
-# for a single segment of the ray)
-#
-# In general, we are effectively solving the following integral (dependence on
-# frequency is dropped to simplify notation)
-#     f = -∫ S(𝜏) * exp(-𝜏) d𝜏 integrated from 𝜏 to 0
-# We are integrating the light as it moves from the far end of the ray
-# towards the observer.
-#
-# We can reverse this integral so we are integrating along the ray from
-# near to far
-#     f = ∫ S(𝜏) * exp(-𝜏) d𝜏 integrated from 0 to 𝜏
-#
-# Now let's break this integral up into N segments
-#
-#    f = ∑_(i=0)^(N-1) ∫_i S(𝜏) * exp(-𝜏) d𝜏
-# - each integral integrates between 𝜏_i and 𝜏_(i+1) (which correspond to
-#   the tau values at the edges of each segment.
-#
-# Now if we assume that S(𝜏) has a constant value S_i we can pull S_i out
-# of the integral and solve the integral analytically.
-# ->  ∫ exp(-𝜏) d𝜏 from 𝜏_i to 𝜏_(i+1) is
-#           -exp(-𝜏_(i+1)) - (-exp(-𝜏_i))
-#     OR equivalently, it's
-#           exp(-𝜏_i) - exp(-𝜏_(i+1))
-#
-# Putting this togeter, we find that:
-#    f = ∑_(i=0)^(N-1) S_i * ( exp(-𝜏_i) - exp(-𝜏_(i+1)) )
-#
-# Coming back the following function:
-# -> the function considers a single section of the above summation and
-#    evaluates the integral over tau AND the integrated source-term
-#
-# This function should be repeatedly called moving progressively further from
-# the observer
-cdef void update_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj,
-                                           const double* absorption_coef,
-                                           double source_function, double dz):
-    # NOTE: its ok to pass obj by value since the only thing being updated are
-    #       pointers pointer held by obj
-    # implicit assumption: absorption_coef has obj.nfreq entries
-
-    cdef Py_ssize_t freq_i
-    cdef double diff, cur_segEnd_expNegTau
-    for freq_i in range(obj.nfreq):
-        # part 0: precompute -exp(obj.total_tau[freq_i])
-        # -> we need to know the exponential of negative optical depth at start
-        #    of current segment
-        #
-        # this is done implicitly. The value is equivalent to
-        # obj.segStart_expNegTau[freq_i]
-
-        # part 1: update obj.total_tau[freq_i] so that it holds the
-        #         optical-depth at the end of the current segment
-        # -> this is equivalent to saying do the integral over tau in the
-        #    current segment
-        #
-        # recall: we defined tau so that it is increasing as we move away from
-        #         the observer
-        obj.total_tau[freq_i] += (absorption_coef[freq_i] * dz)
-
-        # part 2: perform the integral over the source term in current segment
-        # first, compute the value of exp(-tau) at end of the current segment
-        cur_segEnd_expNegTau = exp_f64(-obj.total_tau[freq_i])
-        # next, update the integrated source term
-        diff = obj.segStart_expNegTau[freq_i] - cur_segEnd_expNegTau
-        obj.integrated_source[freq_i] += (source_function * diff)
-
-        # part 3: prepare for next segment (the value of expNegTau at the end of
-        # the current segment is the value at the start of the next segment)
-        obj.segStart_expNegTau[freq_i] = cur_segEnd_expNegTau
-
-cdef void clean_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj):
-    if ((obj.nfreq > 0) and (obj.segStart_expNegTau != NULL)):
-        PyMem_Free(obj.segStart_expNegTau)
-
 class NdensRatio:
     hi_div_lo: np.ndarray
-
-cdef struct Ndens_And_Ratio:
-    double ndens_1
-    double n2g1_div_n1g2
-
-@cython.wraparound(False)
-@cython.boundscheck(False)
-@cython.cdivision(True)
-cdef Ndens_And_Ratio ndens_and_ratio_from_partition(
-    LinInterpPartitionFn partition_fn_pack, double kinetic_T,
-    double ndens_ion_species, double g_1, double energy_1_erg,
-    double rest_freq_Hz):
-
-    cdef double restframe_energy_photon_erg = rest_freq_Hz * HPLANCK_CGS
-    cdef double beta_cgs = 1.0 / (kinetic_T * KBOLTZ_CGS)
-
-    cdef Ndens_And_Ratio out
-
-    out.ndens_1 = (
-        ndens_ion_species * g_1 * exp_f64(-energy_1_erg * beta_cgs)
-        / eval_partition_fn(partition_fn_pack, kinetic_T) 
-    )
-
-    # n1/n2 = (g1/g2) * exp(restframe_energy_photon_cgs * beta_cgs)
-    # n2/n1 = (g2/g1) * exp(-restframe_energy_photon_cgs * beta_cgs)
-    # (n2*g1)/(n1*g2) = exp(-restframe_energy_photon_cgs * beta_cgs)
-    out.n2g1_div_n1g2 = exp_f64(-1 * restframe_energy_photon_erg * beta_cgs)
-    return out
 
 # further optimization ideas:
 # 1. don't allow level_pops_arg to be an arbitrary python object
@@ -1053,6 +898,8 @@ def _generate_noscatter_spectrum_cy(object line_props,
         and such that it increases as we move backwards along the ray (i.e. it
         increases with distance from the observer)
     """
+    cdef C_LineProps c_line_props = get_LineProps_struct(line_props)
+
     cdef PyLinInterpPartitionFunc partition_fn
     cdef LinInterpPartitionFn partition_fn_pack
 
@@ -1060,7 +907,7 @@ def _generate_noscatter_spectrum_cy(object line_props,
         partition_fn = <PyLinInterpPartitionFunc>level_pops_arg
         partition_fn_pack = partition_fn.get_partition_fn_struct()
         errcode = _generate_noscatter_spectrum_impl(
-            line_props, obs_freq.shape[0], &obs_freq[0],
+            c_line_props, obs_freq.shape[0], &obs_freq[0],
             dz.shape[0], &vLOS[0], &ndens[0], &kinetic_T[0],
             &doppler_parameter_b[0], &dz[0],
             partition_fn_pack,
@@ -1071,7 +918,8 @@ def _generate_noscatter_spectrum_cy(object line_props,
     if errcode != 0:
         raise RuntimeError("SOMETHING WENT WRONG")
 
-cdef int _generate_noscatter_spectrum_impl(object line_props,
+@cython.cdivision(True)
+cdef int _generate_noscatter_spectrum_impl(C_LineProps line_props,
                                            const Py_ssize_t nfreq,
                                            const double* obs_freq,
                                            const Py_ssize_t num_segments,
@@ -1091,9 +939,7 @@ cdef int _generate_noscatter_spectrum_impl(object line_props,
     # - State2 is the upper level and State1 is the lower level
     # - B12 multiplied by average intensity gives the rate of absorption
     # - A21 gives the rate of spontaneous emission
-    cdef double B12_cgs = line_props.B_absorption_cgs
-    cdef double g_1 = float(line_props.g_lo)
-    cdef double g_2 = float(line_props.g_hi)
+    cdef double B12_cgs = line_props.B12_cgs
 
     cdef IntegralStructNoScatterRT accumulator = \
         prep_IntegralStructNoScatterRT(nfreq, out_tau, out_integrated_source)
@@ -1125,8 +971,7 @@ cdef int _generate_noscatter_spectrum_impl(object line_props,
             tmp_pair = ndens_and_ratio_from_partition(
                 partition_fn_pack = partition_fn_pack,
                 kinetic_T = kinetic_T[pos_i], ndens_ion_species = ndens[pos_i],
-                g_1 = g_1, energy_1_erg = line_props.energy_lo_erg,
-                rest_freq_Hz = rest_freq_Hz)
+                line_props = line_props)
 
         # Using equations 1.78 and 1.79 of Rybicki and Lighman to get
         # - absorption coefficient (with units of cm**-1), including the

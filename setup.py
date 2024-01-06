@@ -15,9 +15,7 @@ class build_ext(_build_ext):
         import numpy
         self.include_dirs.append(numpy.get_include())
 
-extra_compile_args = []
-extra_kwargs = {'extra_compile_args' :  extra_compile_args,
-                'extra_link_args' : extra_compile_args}
+extra_kwargs = {}
 ext_modules = [
     Extension('gasimage.ray_traversal._ray_intersections_cy',
               ['gasimage/ray_traversal/_ray_intersections_cy.pyx'],
@@ -34,6 +32,7 @@ ext_modules = [
               ['gasimage/_generate_spec_cy.pyx'],
               define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
               language = 'c++',
+              extra_compile_args = ['--std=c++17'],
               **extra_kwargs
     ),
     #Extension('gasimage.utilts._ArrayDict_cy',
