@@ -78,6 +78,69 @@ struct C_LineProps{
                   // absorption
 };
 
+// When considering a transition we construct a new LineProfileStruct for each
+// gas element.
+// -> An instance is configured based on the doppler_parameter_b value and los
+//    component of that element. It also depends on the transition's rest-frame
+//    frequency
+// -> An instance holds some precalcuated quantities for evaluating the
+//    normalized gaussian:
+//        norm * exp( neg_half_div_sigma2 *
+//                    (obs_freq*emit_freq_factor - rest_freq)**2 )
+struct LineProfileStruct {
+  // norm is the normalization factor of the line profile (in frequency
+  // space). Multiplying this quantity by the exponential term will normalize
+  // the gaussian. (This has units of Hz**-1)
+  double norm;
+
+  // half_div_sigma2 is used in the exponential. (This has units of Hz**-1)
+  double neg_half_div_sigma2;
+
+  // emit_freq_factor is ``1.0 / (1 + bulk_vlos / c)``. Multiplying the
+  // observed frequency by this factor gives the emission-frequency (i.e. the
+  // frequency in the reference frame where the los-component of the bulk
+  // velocity is zero)
+  double emit_freq_factor;
+};
+
+inline LineProfileStruct prep_LineProfHelper(double rest_freq,
+                                             double doppler_parameter_b,
+                                             double velocity_offset) noexcept
+{
+  // compute the INVERSE of what Rybicki and Lightman call the "Doppler width"
+  // -> NOTE: the input doppler_parameter_b argument specifies a value that is
+  //    the standard deviation of the los VELOCITY profile times sqrt(2)
+  // -> the quantity Rybicki and Lightman call the "Doppler width" is the
+  //    standard-deviation of the FREQUENCY profile times sqrt(2)
+  double temp = C_CGS / (rest_freq * doppler_parameter_b);
+
+  LineProfileStruct out;
+  out.norm = INV_SQRT_PI * temp;
+  out.neg_half_div_sigma2 = -1.0 * temp * temp;
+  out.emit_freq_factor = 1.0 / (1.0 + velocity_offset/C_CGS);
+  return out;
+}
+
+inline double eval_line_profile(double obs_freq, double rest_freq,
+                                LineProfileStruct prof) noexcept
+{
+  // convert from the observed frequency, obs_freq, to emit_freq, the frequency
+  // emitted/absorbed (in the frame where the bulk gas velocity is zero)
+  //
+  // obs_freq = emit_freq * (1 + bulk_vlos / c)
+  // emit_freq = obs_freq / (1 + bulk_vlos / c)
+  double emit_freq = obs_freq * prof.emit_freq_factor;
+
+  // compute the exponential term:
+  //     exp(-(emit_freq - rest_freq)**2 / (2 * sigma**2))
+  double delta_freq = (emit_freq - rest_freq);
+  double exp_term = std::exp(delta_freq * delta_freq *
+                             prof.neg_half_div_sigma2);
+
+  // finally, multiply the exponential term by the normalization
+  return prof.norm * exp_term;
+}
+
 struct Ndens_And_Ratio{
   double ndens_1;
   double n2g1_div_n1g2;
@@ -107,7 +170,7 @@ inline Ndens_And_Ratio ndens_and_ratio_from_partition(
 
 } // anonymous namespace
 
-///
+
 /// The following struct is used to solve for the optical depth and the
 /// integrated source_function diminished by absorption.
 ///
@@ -275,4 +338,119 @@ void clean_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj)
   if ((obj.nfreq > 0) && (obj.segStart_expNegTau != nullptr)) {
       delete[] obj.segStart_expNegTau;
   }
+}
+
+
+int generate_noscatter_spectrum_impl(C_LineProps line_props,
+                                     const long nfreq,
+                                     const double* obs_freq,
+                                     const long num_segments,
+                                     const double* vLOS,
+                                     const double* ndens,
+                                     const double* kinetic_T,
+                                     const double* doppler_parameter_b,
+                                     const double* dz,
+                                     const LinInterpPartitionFn partition_fn_pack,
+                                     double* out_integrated_source,
+                                     double* out_tau)
+{
+  // load transition properties:
+  const double rest_freq_Hz = line_props.freq_Hz;
+
+  // consider 2 states: states 1 and 2.
+  // - State2 is the upper level and State1 is the lower level
+  // - B12 multiplied by average intensity gives the rate of absorption
+  // - A21 gives the rate of spontaneous emission
+  const double B12_cgs = line_props.B12_cgs;
+
+  IntegralStructNoScatterRT accumulator =
+    prep_IntegralStructNoScatterRT(nfreq, out_tau, out_integrated_source);
+
+  if (accumulator.nfreq < 1) return 1; // prob with initializing accumulator!
+
+  const double rest_freq3 = rest_freq_Hz*rest_freq_Hz*rest_freq_Hz;
+  const double source_func_numerator = (2*HPLANCK_CGS * rest_freq3 /
+                                        (C_CGS * C_CGS));
+
+  double* alpha_nu_cgs = new double[nfreq];
+
+  for (long pos_i = 0; pos_i < num_segments; pos_i++) {
+
+    Ndens_And_Ratio tmp_pair;
+    if (true) {
+      // in this case:
+      // -> treat level_pops_arg as partition function
+      // -> treat ndens as number density of particles described by
+      //    partition function
+      // -> assume LTE
+      tmp_pair = ndens_and_ratio_from_partition(partition_fn_pack,
+                                                kinetic_T[pos_i], ndens[pos_i],
+                                                line_props);
+    }
+
+    // Using equations 1.78 and 1.79 of Rybicki and Lighman to get
+    // - absorption coefficient (with units of cm**-1), including the
+    //   correction for stimulated-emission
+    // - the source function
+    // - NOTE: there are some weird ambiguities in the frequency dependence in
+    //   these equations. These are discussed below.
+
+    // first compute alpha at the line-center (ignoring broadening profile)
+    // & then compute alpha as a function of frequency:
+    double stim_emission_correction = (1.0 - tmp_pair.n2g1_div_n1g2);
+    double alpha_center = (HPLANCK_CGS * rest_freq_Hz * tmp_pair.ndens_1 *
+                           B12_cgs * stim_emission_correction) / (4* M_PI);
+
+    // construct the profile for the current gas-element
+    LineProfileStruct prof = prep_LineProfHelper(rest_freq_Hz,
+                                                 doppler_parameter_b[pos_i],
+                                                 vLOS[pos_i]);
+
+    for (long freq_i = 0; freq_i < nfreq; freq_i++) {
+      double profile_val = eval_line_profile(obs_freq[freq_i], rest_freq_Hz,
+                                            prof);
+      alpha_nu_cgs[freq_i] = alpha_center * profile_val;
+    }
+
+    double source_func_cgs =
+      source_func_numerator / ((1.0/tmp_pair.n2g1_div_n1g2) - 1.0);
+
+    // FREQUENCY AMBIGUITIES:
+    // - in Rybicki and Lighman, the notation used in equations 1.78 and 1.79
+    //   suggest that all frequencies used in computing linear_absorption and
+    //   source_function should use the observed frequency (in the
+    //   reference-frame where gas-parcel has no bulk motion)
+    // - currently, we use the line's central rest-frame frequency everywhere
+    //   other than in the calculation of the line profile.
+    //
+    // In the absorption-coefficient, I think our choice is well-motivated!
+    // -> if you look back at the derivation the equation 1.74, it seems
+    //    that the leftmost frequency should be the rest_freq (it seems like
+    //    they dropped this along the way and carried it through to 1.78)
+    // -> in the LTE case, they don't use rest-freq in the correction for
+    //    stimulated emission (eqn 1.80). I think what we do in the LTE case
+    //    is more correct.
+    //
+    // Overall, I suspect the reason that Rybicki & Lightman play a little
+    // fast and loose with frequency dependence is the sort of fuzzy
+    // assumptions made when deriving the Einstein relations. (It also helps
+    // them arive at result that source-function is a black-body in LTE)
+    //
+    // At the end of the day, it probably doesn't matter much which
+    // frequencies we use (the advantage of our approach is we can put all
+    // considerations of LOS velocities into the calculation of the line
+    // profile)
+    //
+    // now that we know the source-function and the absorption coefficient,
+    // let's compute the integral(s) for the current section of the array
+    update_IntegralStructNoScatterRT(accumulator, alpha_nu_cgs,
+                                     source_func_cgs, dz[pos_i]);
+
+  }
+
+  // do some cleanup!
+  clean_IntegralStructNoScatterRT(accumulator);
+  delete[] alpha_nu_cgs;
+
+  return 0;
 }
