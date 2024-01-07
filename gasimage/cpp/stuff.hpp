@@ -1,6 +1,7 @@
 #include "err.hpp"
-#include <algorithm> // std::distance, std::lower_bound
-#include <cmath> // std::isnan, std::log10
+#include <algorithm>   // std::distance, std::lower_bound
+#include <cmath>       // std::exp, std::isnan, std::log10, std::sqrt
+#include <type_traits> // std::is_same_v
 
 
 // define some constants!
@@ -130,6 +131,27 @@ inline flt_t eval_partition_fn(const LinInterpPartitionFn& pack,
 
     return std::pow(10.0, y);
   }
+}
+
+/// Compute the doppler parameter (in cm/s)
+///
+/// @param kinetic_T kinetic temperature in Kelvin
+/// @param inv_particle_mass_cgs is 1.0 divided by the particle mass
+///
+/// @notes
+/// The Doppler parameter had units consistent with velocity and is ofte
+/// represented by the variable ``b``. ``b/sqrt(2)`` specifies the standard
+/// deviation of the line-of-sight velocity component. For a given line
+/// transition with a rest-frame frequency ``rest_freq``,
+/// ``b * rest_freq/unyt.c_cgs`` specifies what Rybicki and Lightman call the
+/// "Doppler width". The "Doppler width" divided by ``sqrt(2)`` is the standard
+/// deviation of the line-profile for the given transition.
+inline double doppler_parameter_b_from_temperature(double kinetic_T,
+                                                   double inv_particle_mass_cgs)
+  noexcept
+{
+  // this assumes that the temperature is already in units of kelvin
+  return std::sqrt(2.0 * KBOLTZ_CGS * kinetic_T * inv_particle_mass_cgs);
 }
 
 namespace { //anonymous namespace

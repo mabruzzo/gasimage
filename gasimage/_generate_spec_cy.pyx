@@ -6,7 +6,6 @@ cimport cython
 
 from libc.math cimport exp as exp_f64
 from libc.math cimport sqrt as sqrt_f64
-from cpython.mem cimport PyMem_Malloc, PyMem_Free
 
 # CLEANUP ToDo List:
 # -> unify the interface a little more between _generate_ray_spectrum_cy and
@@ -58,13 +57,8 @@ cdef extern from "cpp/stuff.hpp":
     double eval_partition_fn(const LinInterpPartitionFn& pack,
                              double T_val)
 
-    struct Ndens_And_Ratio:
-        double ndens_1
-        double n2g1_div_n1g2
-
-    Ndens_And_Ratio ndens_and_ratio_from_partition(
-        LinInterpPartitionFn partition_fn_pack, double kinetic_T,
-        double ndens_ion_species, C_LineProps line_props)
+    double doppler_parameter_b_from_temperature(double kinetic_T,
+                                                double inv_particle_mass_cgs)
 
     struct LineProfileStruct:
         double norm
@@ -340,21 +334,7 @@ from .ray_traversal import traverse_grid, max_num_intersections
 from .rt_config import default_spin_flip_props
 from .utils.misc import check_consistent_arg_dims, _has_consistent_dims
 
-# DEFINE DIFFERENT APPROACHES FOR COMPUTING THE DOPPLER PARAMETER, B
-#
-# BACKGROUND: The Doppler parameter had units consistent with velocity and is
-# often represented by the variable ``b``. ``b/sqrt(2)`` specifies the standard
-# deviation of the line-of-sight velocity component. For a given line
-# transition with a rest-frame frequency ``rest_freq``,
-# ``b * rest_freq/unyt.c_cgs`` specifies what Rybicki and Lightman call the
-# "Doppler width". The "Doppler width" divided by ``sqrt(2)`` is the standard
-# deviation of the line-profile for the given transition.
-
-
-cdef double doppler_parameter_b_from_temperature(double kinetic_T,
-                                                 double inv_particle_mass_cgs):
-    # this assumes that the temperature is already in units of kelvin
-    return sqrt_f64(2.0 * KBOLTZ_CGS * kinetic_T * inv_particle_mass_cgs)
+# DEFINE DIFFERENT APPROACHES FOR COMPUTING THE DOPPLER PARAMETER, b
 
 def _try_precompute_doppler_parameter(grid, approach,
                                       particle_mass_in_grams = None):
@@ -672,10 +652,6 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
             tmp_dz_view = tmp_dz
 
             ray_data.num_segments = tmp_dz_view.shape[0]
-
-            #doppler_parameter_b.get_vals_cm_per_s(
-            #    idx3Darr = idx3D_view, out = cur_doppler_parameter_b
-            #)
 
             # read the quantities along the ray into the 1d buffer
             # -> explicitly access the buffers through the memoryviews rather
