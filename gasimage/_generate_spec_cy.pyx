@@ -349,117 +349,54 @@ from .utils.misc import check_consistent_arg_dims, _has_consistent_dims
 # ``b * rest_freq/unyt.c_cgs`` specifies what Rybicki and Lightman call the
 # "Doppler width". The "Doppler width" divided by ``sqrt(2)`` is the standard
 # deviation of the line-profile for the given transition.
-#
-# We choose to represent the different strategies as distinct ExtensionTypes so
-# we can use cython's ability to dispatch based on the desired strategy for
-# computing the doppler-broadening
-# -> a potential optimization my be to treat the extension types as structs
-#    (and avoid attaching methods to them)
 
-# NOTE: I would like to refactor things so that temperature_arr is not stored
-# as an attribute... Instead, I want to pass a single value temperature as an
-# argument
-
-cdef class PrecomputedDopplerParameter:
-    cdef double[:,:,:] doppler_parameter_b_arr
-
-    def __init__(self, doppler_parameter_b_arr):
-        self.doppler_parameter_b_arr = doppler_parameter_b_arr
-
-    @cython.boundscheck(False)
-    @cython.wraparound(False)
-    cdef get_vals_cm_per_s(self, long[:,:] idx3Darr,
-                           double [::1] out):
-        cdef Py_ssize_t i
-        for i in range(idx3Darr.shape[1]):
-            out[i] = self.doppler_parameter_b_arr[idx3Darr[0,i], idx3Darr[1,i],
-                                                  idx3Darr[2,i]]
-        
-
-def build_precomputed_doppler_parameter(grid, fixed_val = None):
-    if fixed_val is not None:
-        assert fixed_val.ndim == 0
-        assert fixed_val.to('cm/s').v > 0
-        b_arr = np.broadcast_to(fixed_val.to('cm/s').v,
-                                shape = grid['gas', 'velocity_x'].shape)
-        return PrecomputedDopplerParameter(b_arr)
-
-    # this is the "incorrect" legacy approach!
-    T_field = ('gas','temperature')
-    mmw_field = ('gas','mean_molecular_weight')
-    T_vals, mmw_vals = grid[T_field], grid[mmw_field]
-
-    # previously, a bug in the units caused a really hard to debug error
-    # (when running the program in parallel). So now we manually check!
-    if not _has_consistent_dims(T_vals, unyt.dimensions.temperature):
-        raise RuntimeError(f"{T_field!r}'s units are wrong")
-    elif not _has_consistent_dims(mmw_vals, unyt.dimensions.dimensionless):
-        raise RuntimeError(f"{mmw_field!r}'s units are wrong")
-
-    to_Kelvin_factor = float(T_vals.uq.to('K').v)
-    b_arr = np.sqrt(2.0 * KBOLTZ_CGS * to_Kelvin_factor * T_vals.ndview /
-                    (mmw_vals.ndview * MH_CGS))
-
-    return PrecomputedDopplerParameter(b_arr)
 
 cdef double doppler_parameter_b_from_temperature(double kinetic_T,
                                                  double inv_particle_mass_cgs):
     # this assumes that the temperature is already in units of kelvin
     return sqrt_f64(2.0 * KBOLTZ_CGS * kinetic_T * inv_particle_mass_cgs)
 
-
-cdef class DopplerParameterFromTemperature:
-    cdef double[:,:,::1] temperature_arr
-    cdef double inv_particle_mass_cgs
-    cdef double internal_to_Kelvin_factor
-
-    def __init__(self, grid, particle_mass_in_grams):
+def _try_precompute_doppler_parameter(grid, approach,
+                                      particle_mass_in_grams = None):
+    if (approach is None):
+        raise RuntimeError("The default approach for computing the Doppler "
+                           "Parameter is changing!")
+    elif approach == 'normal':
+        # while we could precompute in this case, its better if we don't!
+        return None
+    elif approach == 'legacy':
+        # this is the "incorrect" legacy approach!
         T_field = ('gas','temperature')
-        T_vals = grid[T_field]
+        mmw_field = ('gas','mean_molecular_weight')
+        T_vals, mmw_vals = grid[T_field], grid[mmw_field]
 
         # previously, a bug in the units caused a really hard to debug error
         # (when running the program in parallel). So now we manually check!
         if not _has_consistent_dims(T_vals, unyt.dimensions.temperature):
             raise RuntimeError(f"{T_field!r}'s units are wrong")
+        elif not _has_consistent_dims(mmw_vals, unyt.dimensions.dimensionless):
+            raise RuntimeError(f"{mmw_field!r}'s units are wrong")
 
-        self.temperature_arr = T_vals.ndview # strip units
-        self.inv_particle_mass_cgs = 1.0 / particle_mass_in_grams
-
-        self.internal_to_Kelvin_factor = float(T_vals.uq.to('K').v)
-
-    @cython.boundscheck(False)
-    @cython.wraparound(False)
-    cdef get_vals_cm_per_s(self, long[:,:] idx3Darr,
-                           double [::1] out):
-        cdef Py_ssize_t i
-        for i in range(idx3Darr.shape[1]):
-            out[i] = doppler_parameter_b_from_temperature(
-                self.temperature_arr[idx3Darr[0,i],idx3Darr[1,i],idx3Darr[2,i]],
-                self.inv_particle_mass_cgs)
-
-ctypedef fused FusedDopplerParameterType:
-    PrecomputedDopplerParameter
-    DopplerParameterFromTemperature
-
-def _construct_Doppler_Parameter_Approach(grid, approach,
-                                          particle_mass_in_grams = None):
-    if (approach is None):
-        raise RuntimeError("The default approach for computing the Doppler "
-                           "Parameter is changing!")
-    elif isinstance(approach,str):
-        if approach == 'legacy':
-            return build_precomputed_doppler_parameter(grid, None)
-        elif approach == 'normal':
-            return DopplerParameterFromTemperature(grid, particle_mass_in_grams)
-        else:
-            raise ValueError(
-                "when doppler_parameter_b approach is a str, it must be "
-                f"'legacy' or 'normal', not {approach!r}")
+        to_Kelvin_factor = float(T_vals.uq.to('K').v)
+        return np.sqrt(2.0 * KBOLTZ_CGS * to_Kelvin_factor *
+                       T_vals.ndview / (mmw_vals.ndview * MH_CGS))
+    elif isinstance(approach, str):
+        raise ValueError(
+            "when doppler_parameter_b approach is a str, it must be "
+            f"'legacy' or 'normal', not {approach!r}")
+    elif (isinstance(approach, unyt.unyt_array) and (approach.ndim == 0) and
+          _has_consistent_dims(approach, unyt.dimensions.velocity)):
+        fixed_val = approach.to('cm/s').v
+        assert fixed_val > 0
+        return np.broadcast_to(fixed_val.to('cm/s').v,
+                               shape = grid['gas', 'velocity_x'].shape)
     else:
-        return build_precomputed_doppler_parameter(grid, approach)
+        raise ValueError("doppler_parameter_b approach can be a str or a "
+                         "unyt.unyt_quantity")
 
-def _calc_doppler_parameter_b(grid, idx3Darr, approach = None,
-                              particle_mass_in_grams = None):
+def _calc_doppler_parameter_b(object grid, long[:,:] idx3Darr,
+                              object approach = None,
+                              object particle_mass_in_grams = None):
     """
     Compute the Doppler parameter (aka Doppler broadening parameter) of the gas
     in cells specified by the inidices idx.
@@ -480,17 +417,42 @@ def _calc_doppler_parameter_b(grid, idx3Darr, approach = None,
 
     (THIS IS DEFINED FOR BACKWARDS COMPATABILITY)
     """
+    cdef Py_ssize_t i
+    cdef double[:,:,:] view
+    cdef inv_particle_mass_cgs
+
     out = np.empty(shape = (idx3Darr.shape[1],), dtype = 'f8')
-    tmp = _construct_Doppler_Parameter_Approach(
-        grid, approach, particle_mass_in_grams = particle_mass_in_grams)
-    if isinstance(tmp, PrecomputedDopplerParameter):
-        (<PrecomputedDopplerParameter>tmp).get_vals_cm_per_s(
-            idx3Darr = idx3Darr, out = out)
-    elif isinstance(tmp, DopplerParameterFromTemperature):
-        (<DopplerParameterFromTemperature>tmp).get_vals_cm_per_s(
-            idx3Darr = idx3Darr, out = out)
+
+    cdef double[::1] out_view = out
+
+    b_arr = _try_precompute_doppler_parameter(grid, approach,
+                                              particle_mass_in_grams = None)    
+    if b_arr is not None:
+        view = b_arr
+        for i in range(idx3Darr.shape[1]):
+            out_view[i] = view[idx3Darr[0,i], idx3Darr[1,i], idx3Darr[2,i]]
     else:
-        raise RuntimeError("SOMETHING IS WRONG")
+        assert (approach is None) or (approach == 'normal')
+        T_field = ('gas','temperature')
+        T_vals = grid[T_field]
+
+        # previously, a bug in the units caused a really hard to debug error
+        # (when running the program in parallel). So now we manually check!
+        if not _has_consistent_dims(T_vals, unyt.dimensions.temperature):
+            raise RuntimeError(f"{T_field!r}'s units are wrong")
+
+        temperature_arr = T_vals.to('K').ndview # strip units
+        view = temperature_arr
+
+        assert particle_mass_in_grams > 0.0
+        inv_particle_mass_cgs = 1.0 / particle_mass_in_grams
+
+        for i in range(idx3Darr.shape[1]):
+            out_view[i] = doppler_parameter_b_from_temperature(
+                temperature_arr[idx3Darr[0,i],idx3Darr[1,i],idx3Darr[2,i]],
+                inv_particle_mass_cgs
+            )
+
     return out * (unyt.cm/unyt.s)
 
 
@@ -581,22 +543,28 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     kinetic_T = grid['gas', 'temperature']
     kinetic_T_to_K_factor = float(kinetic_T.uq.to('K').v)
 
-    # currently, this function can only be used for the 21 spin-flip transition
-    # -> consequently, we ALWAY specify that the particle mass is that of a
-    #    Hydrogen atom!
-    doppler_parameter_b = _construct_Doppler_Parameter_Approach(
-        grid, approach = doppler_parameter_b, particle_mass_in_grams = MH_CGS
+    precomputed_doppler_parameter_grid = _try_precompute_doppler_parameter(
+        grid, approach = doppler_parameter_b,
+        particle_mass_in_grams = particle_mass_in_grams
     )
+    cdef bint using_precalculated_doppler = (
+        precomputed_doppler_parameter_grid is not None
+    )
+    if not using_precalculated_doppler: 
+        precomputed_doppler_parameter_grid = np.broadcast_to(
+            1.0, (vx.shape[0], vx.shape[1], vx.shape[2]))
 
     return _generate_ray_spectrum(
         legacy_optically_thin_spin_flip = legacy_optically_thin_spin_flip,
         spatial_grid_props = spatial_grid_props,
         full_ray_start = full_ray_start, full_ray_uvec = full_ray_uvec,
         line_props = line_props, ndens_strat = ndens_strat,
+        particle_mass_in_grams = particle_mass_in_grams,
         obs_freq_Hz = _obs_freq_Hz_view,
         vx = vx, vy = vy, vz = vz,
         vel_to_cm_per_s_factor = vel_to_cm_per_s_factor,
-        doppler_parameter_b = doppler_parameter_b,
+        using_precalculated_doppler = using_precalculated_doppler,
+        precomputed_doppler_parameter_grid = precomputed_doppler_parameter_grid,
         ndens_grid = ndens_grid,
         ndens_to_cc_factor = ndens_to_cc_factor,
         kinetic_T_grid = kinetic_T.ndview,
@@ -609,11 +577,13 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                            object spatial_grid_props,
                            object full_ray_start, object full_ray_uvec,
                            object line_props, object ndens_strat,
+                           double particle_mass_in_grams,
                            double[::1] obs_freq_Hz,
                            double[:,:,::1] vx, double[:,:,::1] vy,
                            double[:,:,::1] vz,
                            double vel_to_cm_per_s_factor,
-                           FusedDopplerParameterType doppler_parameter_b,
+                           bint using_precalculated_doppler,
+                           const double[:,:,:] precomputed_doppler_parameter_grid,
                            double[:,:,::1] ndens_grid,
                            double ndens_to_cc_factor,
                            double[:,:,::1] kinetic_T_grid,
@@ -621,6 +591,7 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                            object partition_func,
                            object out):
     # this function sure has a lot of arguments...
+    #cdef double inv_particle_mass_cgs = 1.0 / particle_mass_in_grams
 
     # SANITY CHECK:
     if legacy_optically_thin_spin_flip:
@@ -702,9 +673,9 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
 
             ray_data.num_segments = tmp_dz_view.shape[0]
 
-            doppler_parameter_b.get_vals_cm_per_s(
-                idx3Darr = idx3D_view, out = cur_doppler_parameter_b
-            )
+            #doppler_parameter_b.get_vals_cm_per_s(
+            #    idx3Darr = idx3D_view, out = cur_doppler_parameter_b
+            #)
 
             # read the quantities along the ray into the 1d buffer
             # -> explicitly access the buffers through the memoryviews rather
@@ -732,6 +703,17 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                     ndens[j] = (ndens_grid[i0,i1,i2] * ndens_to_cc_factor)
                     kinetic_T[j] = (kinetic_T_grid[i0,i1,i2] *
                                     kinetic_T_to_K_factor)
+                    cur_doppler_parameter_b[j] = (
+                        precomputed_doppler_parameter_grid[i0,i1,i2]
+                    )
+
+            if not using_precalculated_doppler:
+                for j in range(ray_data.num_segments):
+                    cur_doppler_parameter_b[j] = (
+                        doppler_parameter_b_from_temperature(
+                            kinetic_T[j], 1.0 / particle_mass_in_grams
+                        )
+                    )
 
             if legacy_optically_thin_spin_flip:
                 optically_thin_21cm_ray_spectrum_impl(
