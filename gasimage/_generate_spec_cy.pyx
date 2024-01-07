@@ -47,6 +47,7 @@ cdef extern from "cpp/stuff.hpp":
         int g_hi
         double freq_Hz # rest frequency
         double energy_lo_erg # energy of the lower state
+        double A21_Hz
         double B12_cgs
 
     struct LinInterpPartitionFn:
@@ -77,22 +78,6 @@ cdef extern from "cpp/stuff.hpp":
     double eval_line_profile(double obs_freq, double rest_freq,
                              LineProfileStruct prof)
 
-    struct IntegralStructNoScatterRT:
-        long nfreq
-        double* total_tau
-        double* integrated_source
-        double* segStart_expNegTau
-
-    IntegralStructNoScatterRT prep_IntegralStructNoScatterRT(
-        long nfreq, double* total_tau, double* integrated_source
-    )
-
-    void update_IntegralStructNoScatterRT(const IntegralStructNoScatterRT& obj,
-                                          const double* absorption_coef,
-                                          double source_function, double dz)
-
-    void clean_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj)
-
     int generate_noscatter_spectrum_impl(
         C_LineProps line_props, const long nfreq, const double* obs_freq,
         const long num_segments, const double* vLOS, const double* ndens,
@@ -107,6 +92,7 @@ cdef C_LineProps get_LineProps_struct(object line_props) except *:
     out.g_hi = line_props.g_hi
     out.freq_Hz = line_props.freq_Hz
     out.energy_lo_erg = line_props.energy_lo_erg
+    out.A21_Hz = line_props.A_Hz
     out.B12_cgs = line_props.B_absorption_cgs
     return out
 
@@ -253,16 +239,90 @@ def full_line_profile_evaluation(obs_freq, doppler_parameter_b,
     #print(t2-t1)
     return out.T / unyt.Hz
 
+def _generate_opticallythin_spectrum_cy(object line_props,
+                                        const double[::1] obs_freq,
+                                        const double[::1] vLOS,
+                                        const double[::1] ndens_HI_n1state,
+                                        const double[::1] doppler_parameter_b,
+                                        const double[::1] dz,
+                                        double[::1] out,
+                                        const double[::1] kinetic_T = None):
+    """
+    Compute specific intensity (aka monochromatic intensity) from data measured
+    along the path of a single ray.
+
+    While we only consider the path of a given ray, specific intensity
+    actually describes a continuum of rays with infintesimal differences.
+    Specific intensity is the amount of energy carried by light in frequency
+    range $d\nu$, over time $dt$ along the collection of all rays that pass
+    through a patch of area $dA$ (oriented normal to the given-ray) whose
+    directions subtend a solid angle of $d\Omega$ around the given-ray.
+
+    For computational convenience, a single call to this function will compute
+    the specific intensity at multiple different frequencies.
+
+    The resulting array should be understood to have units of
+    erg/(cm**2 * Hz * s * steradian).
+
+    Parameters
+    ----------
+    line_props : LineProps
+        Encodes details about the line transition
+    obs_freq : ndarray, shape(nfreq,)
+        Array of frequencies to perform radiative transfer at (in Hz).
+    vLOS : ndarray, shape(ngas,)
+        Velocities of the gas in cells along the ray (in cm/s).
+    ndens_HI_n1state : ndarray, shape(ngas,)
+        The number density of neutral hydrogen in cells along the ray (in 
+        cm**-3)
+    doppler_parameter_b : ndarray, shape(ngas,)
+        The Doppler parameter (aka Doppler broadening parameter) of the gas in
+        cells along the ray, often abbreviated with the variable ``b``. This
+        has units of cm/s. ``b/sqrt(2)`` specifies the standard deviation of
+        the line-of-sight velocity component. When this quantity is multiplied
+        by ``rest_freq/unyt.c_cgs.v``, you get what Rybicki and Lightman call
+        the "Doppler width". This alternative quantity is a factor of
+        ``sqrt(2)`` larger than the standard deviation of the frequency profile.
+    dz : ndarray, shape(ngas,)
+        The distance travelled by the ray through each cell (in cm).
+    out : ndarray, shape(nfreq,)
+        Array to hold the outputs
+    """
+    cdef C_LineProps c_line_props = get_LineProps_struct(line_props)
+    cdef double rest_freq = c_line_props.freq_Hz
+    # note: A10_Hz and A21_Hz use 2 different naming schemes to refer to the
+    #       same quantity
+    #       -> $A_{10}$ refers to the rate of spontaneous emission from the
+    #          higher-energy spin-1 state to the lower-energy spin-0 state
+    #       -> $A_{21}$ is more generic notation that specifies the rate of
+    #          spontaneous emission from a higher energy state (state 2) to a
+    #          lower energy state (state 1)
+    cdef double A10_Hz = c_line_props.A21_Hz
+
+    cdef const double* kinetic_T_ptr = NULL
+    if kinetic_T is not None:
+        kinetic_T_ptr = &kinetic_T[0]
+    optically_thin_21cm_ray_spectrum_impl(rest_freq, A10_Hz,
+                                          obs_freq.shape[0], &obs_freq[0],
+                                          dz.shape[0], &vLOS[0],
+                                          &ndens_HI_n1state[0],
+                                          &doppler_parameter_b[0], &dz[0],
+                                          &out[0], kinetic_T_ptr)
+    return out
+    
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cpdef _generate_ray_spectrum_cy(const double[::1] obs_freq,
-                                const double[:] velocities,
-                                const double[:] ndens_HI_n1state,
-                                const double[:] doppler_parameter_b,
-                                const double[:] dz,
-                                double rest_freq, double A10_Hz,
-                                double[::1] out,
-                                const double[:] kinetic_T = None):
+cdef void optically_thin_21cm_ray_spectrum_impl(double rest_freq, double A10_Hz,
+                                                const long nfreq,
+                                                const double* obs_freq,
+                                                const long num_segments,
+                                                const double* vLOS,
+                                                const double* ndens_HI_n1state,
+                                                const double* doppler_parameter_b,
+                                                const double* dz,
+                                                double* out,
+                                                const double* kinetic_T):
     """
     Compute specific intensity (aka monochromatic intensity) from data measured
     along the path of a single ray.
@@ -284,7 +344,7 @@ cpdef _generate_ray_spectrum_cy(const double[::1] obs_freq,
     ----------
     obs_freq : ndarray, shape(nfreq,)
         Array of frequencies to perform radiative transfer at (in Hz).
-    velocities : ndarray, shape(ngas,)
+    vLOS : ndarray, shape(ngas,)
         Velocities of the gas in cells along the ray (in cm/s).
     ndens_HI_n1state : ndarray, shape(ngas,)
         The number density of neutral hydrogen in cells along the ray (in 
@@ -309,8 +369,8 @@ cpdef _generate_ray_spectrum_cy(const double[::1] obs_freq,
     # this ASSUMES that ``exp(-h_cgs*rest_freq / (kboltz_cgs * T_spin))`` is
     # approximately 1 (this is a fairly decent assumption)
 
-    cdef Py_ssize_t num_cells = dz.size
-    cdef Py_ssize_t num_obs_freq = obs_freq.size
+    cdef Py_ssize_t num_cells = num_segments
+    cdef Py_ssize_t num_obs_freq = nfreq
     cdef Py_ssize_t i, j
 
     for j in range(num_obs_freq):
@@ -333,7 +393,7 @@ cpdef _generate_ray_spectrum_cy(const double[::1] obs_freq,
 
         # construct the profile for the current gas-element
         prof = prep_LineProfHelper(rest_freq, doppler_parameter_b[i],
-                                   velocities[i])
+                                   vLOS[i])
 
         for j in range(num_obs_freq): # iterate over oberved frequencies
             profile_val = eval_line_profile(obs_freq[j], rest_freq, prof)
@@ -342,8 +402,6 @@ cpdef _generate_ray_spectrum_cy(const double[::1] obs_freq,
                 QUARTER_DIV_PI
             )
             out[j] += cur_jnu * cur_dz
-
-    return out
 
 from .ray_traversal import traverse_grid, max_num_intersections
 from .rt_config import default_spin_flip_props
@@ -631,9 +689,6 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                            object out):
     # this function sure has a lot of arguments...
 
-    cdef double _A_Hz = float(line_props.A_quantity.to('Hz').v)
-    cdef double _rest_freq_Hz = float(line_props.freq_quantity.to('Hz').v)
-
     cdef Py_ssize_t nrays = full_ray_uvec.shape[0]
     cdef Py_ssize_t i, j
 
@@ -718,12 +773,12 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                 # SANITY CHECK:
                 assert ndens_strat == NdensStrategy.SpecialLegacySpinFlipCase
                 
-                _generate_ray_spectrum_cy(
-                    obs_freq = obs_freq_Hz, velocities = vlos,
+                _generate_opticallythin_spectrum_cy(
+                    line_props = line_props,
+                    obs_freq = obs_freq_Hz, vLOS = vlos,
                     ndens_HI_n1state = ndens,
                     doppler_parameter_b = cur_doppler_parameter_b,
-                    rest_freq = _rest_freq_Hz, dz = dz,
-                    A10_Hz = _A_Hz,
+                    dz = dz,
                     out = out_view[i,:])
             else:
                 # sanity check!
@@ -811,6 +866,8 @@ def _generate_noscatter_spectrum_cy(object line_props,
 
     Parameters
     ----------
+    line_props : LineProps
+        Encodes details about the line transition
     obs_freq : unyt.unyt_array, shape(nfreq,)
         An array of frequencies to perform rt at.
     vLOS : np.ndarray, shape(ngas,)

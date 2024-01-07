@@ -5,11 +5,12 @@ import unyt
 
 from gasimage import default_spin_flip_props
 from gasimage.generate_ray_spectrum import (
-    _generate_ray_spectrum_py,
+    _generate_opticallythin_spectrum_py,
     line_profile
 )
 from gasimage._generate_spec_cy import (
-    full_line_profile_evaluation, _generate_ray_spectrum_cy,
+    full_line_profile_evaluation,
+    _generate_opticallythin_spectrum_cy,
     _generate_noscatter_spectrum_cy
 )
 from gasimage.rt_config import (
@@ -21,6 +22,67 @@ from py_generate_noscatter_spectrum import (
     _generate_noscatter_spectrum,
     blackbody_intensity_cgs
 )
+
+# define some wrapper interfaces around the cython versions of some functions
+# to try to provide an interface equivalent to a python version
+
+# list the kwargs expected to pass arrays to either pair of functions:
+#   -> _generate_noscatter_spectrum_cy & _generate_noscatter_spectrum
+#   -> _generate_opticallythin_spectrum_[pc]y
+#
+# For each kwarg, also list both:
+#  - the expected units in the cython-version
+#  - if we expect the length to vary with the choice of ray
+#
+#
+_kwargs_arr_spec = (
+    ('obs_freq', 'Hz', False), ('vLOS', 'cm/s', True),
+    ('ndens', 'cm**-3', True), ('doppler_parameter_b', 'cm/s', True),
+    ('kinetic_T', 'K', True), ('dz', 'cm', True),
+)
+
+def _process_kwargs(input_kw, coerce_and_strip_units = True, ray_idx = None):
+    # make a copy of the kwargs. For each possible kwarg that can possibly be
+    # expected to pass an array (i.e. specified in _kwargs_arr_spec) this func
+    # may:
+    # -> coerce to expected units & then strip the units
+    # -> only store a slice (if the quantity is ray-dependent & ray_idx is not
+    #    None)
+
+    new_kw = input_kw.copy()
+    if (not coerce_and_strip_units) and (ray_idx is None):
+        return new_kw
+
+    for (kw, u, ray_dependent) in _kwargs_arr_spec:
+        if kw not in new_kw:
+            continue
+        tmp = new_kw[kw]
+        if coerce_and_strip_units:
+            tmp = tmp.to(u).ndview
+        if ray_dependent and (ray_idx is not None):
+            tmp = tmp[ray_idx]
+        new_kw[kw] = tmp
+    return new_kw
+
+def call_cython_noscatter(*, return_timing = False, **kwargs):
+    # this wraps _generate_noscatter_spectrum_cy and tries to provide a
+    # consistent interface to _generate_noscatter_spectrum
+
+    new_kw = _process_kwargs(kwargs, coerce_and_strip_units = True,
+                             ray_idx = None)
+    nfreq = new_kw['obs_freq'].size
+
+    out_integrated_source = np.empty((nfreq,), dtype = 'f8')
+    out_tau = np.empty((nfreq,), dtype = 'f8')
+
+    t1 = datetime.datetime.now()
+    _generate_noscatter_spectrum_cy(
+        out_integrated_source = out_integrated_source,
+        out_tau = out_tau, **new_kw)
+    t2 = datetime.datetime.now()
+    if return_timing:
+        return (out_integrated_source, out_tau), t2 - t1
+    return (out_integrated_source, out_tau)
 
 
 def _simplest_line_profile_impl(obs_freq, doppler_parameter_b,
@@ -197,8 +259,9 @@ def _test_generate_ray_spectrum(nfreq = 201, ngas = 100, zero_vlos = False,
 
     rest_freq = default_spin_flip_props().freq_quantity
 
-    fn_name_pairs = [(_generate_ray_spectrum_py, 'python version'),
-                     (_generate_ray_spectrum_cy, 'optimized cython version')]
+    fn_name_pairs = [
+        (_generate_opticallythin_spectrum_py, 'python version'),
+        (_generate_opticallythin_spectrum_cy, 'optimized cython version')]
 
     data = _gen_test_data(rest_freq, nfreq = nfreq, ngas = ngas,
                           zero_vlos = zero_vlos, seed = seed)
@@ -207,33 +270,33 @@ def _test_generate_ray_spectrum(nfreq = 201, ngas = 100, zero_vlos = False,
 
         kwargs = dict(
             obs_freq = data['obs_freq'].to('Hz'),
-            velocities = data['vlos'].to('cm/s'),
             ndens_HI_n1state = data['ndens'].to('cm**-3'),
             doppler_parameter_b = data['doppler_parameter_b'].to('cm/s'),
             dz = data['dz'].to('cm'),
         )
+        vLOS = data['vlos'].to('cm/s')
+
+        line_props = default_spin_flip_props()
 
         out_l = []
 
         for fn, fn_name in fn_name_pairs:
             out_l.append( np.zeros(shape = data['obs_freq'].shape,
                                    dtype = '=f8') )
-            if fn == _generate_ray_spectrum_py:
+            if fn == _generate_opticallythin_spectrum_py:
                 my_kwargs = dict(
-                    A10 = default_spin_flip_props().A_quantity,
-                    rest_freq = default_spin_flip_props().freq_quantity,
+                    line_props = line_props,
                     only_spontaneous_emission = True,
                     level_pops_from_stat_weights = True,
                     ignore_natural_broadening = True,
+                    vLOS = vLOS,
                     **kwargs)
             else:
                 my_kwargs = dict(
                     ( (k,arr.ndarray_view()) for k,arr in kwargs.items() )
                 )
-                my_kwargs['A10_Hz'] = float(
-                    default_spin_flip_props().A_quantity.to('Hz').v)
-                my_kwargs['rest_freq'] = float(
-                    default_spin_flip_props().freq_quantity.to('Hz').v)
+                my_kwargs['vLOS'] = vLOS.ndarray_view()
+                my_kwargs['line_props'] = default_spin_flip_props()
             t1 = datetime.datetime.now()
             fn(out = out_l[-1], **my_kwargs)
             t2 = datetime.datetime.now()
@@ -317,14 +380,7 @@ def test_generate_noscatter_ray_spectrum():
     _test_generate_noscatter_ray_spectrum(zero_vlos = True,
                                           nominal_dz = (0.25) * unyt.pc)
 
-# list the kwargs that are array and both:
-#  - the expected units in the cython-version
-#  - if we expect the length to vary with the choice of ray
-_noscatter_kwargs_arr_spec = (
-    ('obs_freq', 'Hz', False), ('vLOS', 'cm/s', True),
-    ('ndens', 'cm**-3', True), ('doppler_parameter_b', 'cm/s', True),
-    ('kinetic_T', 'K', True), ('dz', 'cm', True),
-)
+
 
 def subdivided3_noscatter(**main_kwargs):
     # we define this function in order to ensure that our consolidate function
@@ -345,10 +401,9 @@ def subdivided3_noscatter(**main_kwargs):
         if (i+1) == eff_n_partitions:
             stop = size
 
-        cur_kwargs = main_kwargs.copy()
-        for kw, _, ray_dependent in _noscatter_kwargs_arr_spec:
-            if ray_dependent:
-                cur_kwargs[kw] = main_kwargs[kw][start:stop]
+        cur_kwargs = _process_kwargs(main_kwargs,
+                                     coerce_and_strip_units = False,
+                                     ray_idx = slice(start,stop,1))
 
         results.append(
             dict(zip(ordered_keys, _generate_noscatter_spectrum(**cur_kwargs)))
@@ -356,28 +411,6 @@ def subdivided3_noscatter(**main_kwargs):
 
     tmp = consolidate_noscatter_rtchunks(results)
     return [tmp[k] for k in ordered_keys]
-
-def call_cython_noscatter(*, return_timing = False, **kwargs):
-    # this wraps _generate_noscatter_spectrum_cy amd tries to provide a
-    # consistent interface to _generate_noscatter_spectrum
-
-    # customize the kwargs
-    new_kw = kwargs.copy()
-    for (kw, u, _) in _noscatter_kwargs_arr_spec:
-        new_kw[kw] = kwargs[kw].to(u).ndview
-        nfreq = new_kw['obs_freq'].size
-
-    out_integrated_source = np.empty((nfreq,), dtype = 'f8')
-    out_tau = np.empty((nfreq,), dtype = 'f8')
-
-    t1 = datetime.datetime.now()
-    _generate_noscatter_spectrum_cy(
-        out_integrated_source = out_integrated_source,
-        out_tau = out_tau, **new_kw)
-    t2 = datetime.datetime.now()
-    if return_timing:
-        return (out_integrated_source, out_tau), t2 - t1
-    return (out_integrated_source, out_tau)
 
 class TimedFunc:
     def __init__(self, func):

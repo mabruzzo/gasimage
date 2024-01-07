@@ -12,6 +12,20 @@
 #define MH_CGS 1.6737352238051868e-24  /* yt.units.mh_cgs */
 #define KBOLTZ_CGS 1.3806488e-16       /* yt.units.kboltz_cgs */
 
+struct C_LineProps{
+  int g_lo;
+  int g_hi;
+  double freq_Hz; // rest frequency
+  double energy_lo_erg; // energy of the lower state
+
+  // 2 of the 3 Einstein coefficients. Technically, we just need to know one of
+  // them, but for now, we store both for backwards compatability!
+  // -> going forward, it's my intention to stop tracking B12_cgs
+  double A21_Hz;  // The einstein coefficient for spontaneous emission (in Hz)
+  double B12_cgs; // when multiplied by average intensity, gives the rate of
+                  // absorption
+};
+
 typedef double flt_t;
 
 // linearly interpolated partition function
@@ -68,15 +82,6 @@ inline flt_t eval_partition_fn(const LinInterpPartitionFn& pack,
 }
 
 namespace { //anonymous namespace
-
-struct C_LineProps{
-  int g_lo;
-  int g_hi;
-  double freq_Hz; // rest frequency
-  double energy_lo_erg; // energy of the lower state
-  double B12_cgs; // when multiplied by average intensity, gives the rate of
-                  // absorption
-};
 
 // When considering a transition we construct a new LineProfileStruct for each
 // gas element.

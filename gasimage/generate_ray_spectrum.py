@@ -62,13 +62,13 @@ def line_profile(rest_freq, obs_freq, doppler_parameter_b,
 
     return norm*np.exp(exponent.to('dimensionless').v)
 
-def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI_n1state,
-                              doppler_parameter_b, dz, rest_freq,
-                              A10 = 2.85e-15*unyt.Hz,
-                              only_spontaneous_emission = True,
-                              level_pops_from_stat_weights = True,
-                              ignore_natural_broadening = True,
-                              out = None):
+def _generate_opticallythin_spectrum_py(line_props, obs_freq, vLOS,
+                                        ndens_HI_n1state,
+                                        doppler_parameter_b, dz,
+                                        only_spontaneous_emission = True,
+                                        level_pops_from_stat_weights = True,
+                                        ignore_natural_broadening = True,
+                                        out = None):
     """
     Compute specific intensity (aka monochromatic intensity) from data measured
     along the path of a single ray.
@@ -88,9 +88,11 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI_n1state,
 
     Parameters
     ----------
+    line_props : LineProps
+        Encodes details about the line transition
     obs_freq
         Array of frequencies to perform radiative transfer at.
-    velocities
+    vLOS
         Velocities of the gas in cells along the ray
     ndens_HI_n1state
         The number density of neutral hydrogen in cells along the ray
@@ -105,10 +107,6 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI_n1state,
         of the frequency profile.
     dz
         The distance travelled by the ray through each cell.
-    rest_freq
-        The rest-frame frequency of the transition
-    A10
-        The einstein coefficient for spontaneous emission
     only_spontaneous_emission: bool, optional
         Ignore absorption coefficient (and corrections for stimulated emssion)
     level_pops_from_stat_weights:  bool, optional
@@ -142,6 +140,10 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI_n1state,
     under $0.1 \%$ for $T_s \geq 70\, {\rm K}$.
     """
 
+    A10 = line_props.A_quantity
+    rest_freq = line_props.freq_quantity
+    assert (line_props.g_lo == 1) and (line_props.g_hi == 3)
+
     if (only_spontaneous_emission and level_pops_from_stat_weights and
         ignore_natural_broadening):
         # compute ndens in state 1, by combining info from following points:
@@ -155,7 +157,7 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI_n1state,
         profiles = line_profile(rest_freq = rest_freq,
                                 obs_freq = obs_freq,
                                 doppler_parameter_b = doppler_parameter_b,
-                                velocity_offset = velocities)
+                                velocity_offset = vLOS)
 
         # now compute the specific (monochromatic) emission coefficient at a
         # number of frequencies.
@@ -179,7 +181,7 @@ def _generate_ray_spectrum_py(obs_freq, velocities, ndens_HI_n1state,
         raise RuntimeError("This branch is untested (& it needs T_spin)")
         return _generate_general_spectrum(
             T_spin = None, # = 100.0*unyt.K
-            obs_freq = obs_freq, velocities = velocities,
+            obs_freq = obs_freq, velocities = vLOS,
             ndens_HI_n1state = ndens_HI_n1state,
             doppler_parameter_b = doppler_parameter_b, dz = dz, rest_freq = rest_freq,
             A10 = A10,
@@ -260,13 +262,11 @@ def generate_ray_spectrum_legacy(grid, spatial_grid_props,
 
             ndens_HI_n1state = grid[ndens_HI_n1state_field][idx].to('cm**-3')
 
-            out[i,:] = _generate_ray_spectrum_py(
-                obs_freq = obs_freq, velocities = vlos,
+            out[i,:] = _generate_opticallythin_spectrum_py(
+                line_props = spin_flip_props,
+                obs_freq = obs_freq, vLOS = vlos,
                 ndens_HI_n1state = grid[ndens_HI_n1state_field][idx],
-                doppler_parameter_b = cur_doppler_parameter_b,
-                rest_freq = spin_flip_props.freq_quantity,
-                dz = dz,
-                A10 = spin_flip_props.A_quantity,
+                doppler_parameter_b = cur_doppler_parameter_b, dz = dz,
                 only_spontaneous_emission = True,
                 level_pops_from_stat_weights = True,
                 ignore_natural_broadening = True)

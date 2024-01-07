@@ -41,29 +41,30 @@ class LineProperties:
         return unyt.unyt_quantity(self.freq_Hz, "Hz")
 
     @property
-    def B_absorption_cgs(self): return B_absorption_coef(self)
+    def B_absorption_cgs(self): return B_coefs(self)[0]
 
     @property
-    def B_stimemiss_cgs(self):  return B_stim_emission_coef(self)
+    def B_stimemiss_cgs(self):  return B_coefs(self)[1]
 
     @property
     def energy_lo_quantity(self):
         return unyt.unyt_quantity(self.energy_lo_erg,'erg')
 
-
-def B_absorption_coef(lineprop):
+def B_coefs(lineprop):
+    # returns the pair of Einstein B coefficients:
+    #    (B_absorption, B_stimulated_emission)
+    #
     # if we are considering 2 states, 1 & 2, (1 has lower energy so absorption
-    # causes a transition from 1 to 2), then this is called B12
-    g1, g2 = lineprop.g_lo, lineprop.g_hi
-    return g2 * B_stim_emission_coef(lineprop) / g1
-
-def B_stim_emission_coef(lineprop):
-    # if we are considering 2 states, 1 & 2, (1 has lower energy so absorption
-    # causes a transition from 1 to 2), then this is called B21
+    # causes a transition from 1 to 2), then:
+    # -> B_absorption coefficient is called B12
+    # -> B_stimulated_emission coefficient is called B21
     A21, freq = lineprop.A_quantity, lineprop.freq_quantity
-    return (0.5 * A21 * (unyt.c_cgs*unyt.c_cgs) /
-            (unyt.h_cgs * (freq*freq*freq))).in_cgs().v
+    g1, g2 = lineprop.g_lo, lineprop.g_hi
 
+    B_stimulated_emission = (0.5 * A21 * (unyt.c_cgs*unyt.c_cgs) /
+                             (unyt.h_cgs * (freq*freq*freq))).in_cgs().v
+    B_absorption = g2 * B_stimulated_emission / g1
+    return (B_absorption, B_stimulated_emission)
 
 def default_spin_flip_props():
     # note for the future: the
