@@ -187,7 +187,10 @@ def _test_compare_full_noscatter_rt(indata_dir, aligned_rays):
         ray_start_codeLen = start, ray_vec = vec
     )
 
+    print('\nBegin normal calculation:')
     actual_rslt = generate_image(accum_strat, ray_collection, ds)
+
+    print('\nBegin alternative calculation:')
     alt_rslt = _dumber_full_noscatter_rt(accum_strat, ray_collection, ds,
                                          ray_values_kind = 'yt')
 

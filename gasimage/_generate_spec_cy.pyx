@@ -622,6 +622,18 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                            object out):
     # this function sure has a lot of arguments...
 
+    # SANITY CHECK:
+    if legacy_optically_thin_spin_flip:
+        assert ndens_strat == NdensStrategy.SpecialLegacySpinFlipCase
+    else:
+        assert ndens_strat == NdensStrategy.IonNDensGrid_LTERatio
+
+    cdef LinInterpPartitionFn partition_fn_pack
+    if isinstance(partition_func, PyLinInterpPartitionFunc):
+        partition_fn_pack = (
+            (<PyLinInterpPartitionFunc>partition_func).get_partition_fn_struct()
+        )
+
     cdef Py_ssize_t nrays = full_ray_uvec.shape[0]
     cdef Py_ssize_t i, j
 
@@ -640,9 +652,10 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
     cdef double[:,::1] out_view = out
 
     # declaring types used within the (nested) loop:
-    cdef long i0, i1, i2, num_cells
+    cdef long i0, i1, i2
     cdef const double[::1] cur_uvec_view
     cdef long[:,:] idx3D_view
+    cdef const double[::1] tmp_dz_view
 
     # allocate 1d buffers used to hold the various quantities along the ray
     cdef long max_num = max_num_intersections(spatial_grid_props.grid_shape)
@@ -664,6 +677,9 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
 
     cdef double cm_per_length_unit = spatial_grid_props.cm_per_length_unit
 
+
+    cdef C_LineProps c_line_props = get_LineProps_struct(line_props)
+
     # some additional optimizations are definitely still possible:
     # - we can redefine traverse_grid so that it is a cpdef-ed function (avoid
     #   python overhead). We could also define a variant that
@@ -682,12 +698,9 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                                             line_start = ray_start,
                                             spatial_props = spatial_grid_props)
             idx3D_view = tmp_idx
+            tmp_dz_view = tmp_dz
 
-            # convert dz to cm to avoid problems later
-            tmp_dz *= cm_per_length_unit
-
-            num_cells = tmp_dz.shape[0]
-            ray_data.num_segments = num_cells
+            ray_data.num_segments = tmp_dz_view.shape[0]
 
             doppler_parameter_b.get_vals_cm_per_s(
                 idx3Darr = idx3D_view, out = cur_doppler_parameter_b
@@ -702,7 +715,7 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
             with cython.boundscheck(False), cython.wraparound(False):
                 for j in range(ray_data.num_segments):
                     # convert dz to cm to avoid problems later
-                    dz_cm[j] = tmp_dz[j] 
+                    dz_cm[j] = tmp_dz_view[j] * cm_per_length_unit
 
                     # extract the jth element along the ray
                     i0 = idx3D_view[0,j]
@@ -721,31 +734,16 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                                     kinetic_T_to_K_factor)
 
             if legacy_optically_thin_spin_flip:
-                # SANITY CHECK:
-                assert ndens_strat == NdensStrategy.SpecialLegacySpinFlipCase
-                
-                _generate_opticallythin_spectrum_cy(
-                    line_props = line_props,
-                    obs_freq = obs_freq_Hz, vLOS = vlos,
-                    ndens_HI_n1state = ndens,
-                    doppler_parameter_b = cur_doppler_parameter_b,
-                    dz = dz_cm[:num_cells],
-                    out = out_view[i,:])
+                optically_thin_21cm_ray_spectrum_impl(
+                    c_line_props, nfreq, &obs_freq_Hz[0],
+                    ray_data, out = &out_view[i,0])
             else:
-                # sanity check!
-                assert ndens_strat == NdensStrategy.IonNDensGrid_LTERatio
-                
-                _generate_noscatter_spectrum_cy(
-                    line_props = line_props,
-                    obs_freq = obs_freq_Hz,
-                    vLOS = vlos,
-                    ndens = ndens,
-                    kinetic_T = kinetic_T,
-                    doppler_parameter_b = cur_doppler_parameter_b,
-                    dz = dz_cm[:num_cells],
-                    level_pops_arg = partition_func,
-                    out_integrated_source = out_view[i,:nfreq],
-                    out_tau = out_view[i, nfreq:])
+                generate_noscatter_spectrum_impl(
+                    c_line_props, nfreq, &obs_freq_Hz[0],
+                    ray_data, partition_fn_pack = partition_fn_pack,
+                    out_integrated_source = &out_view[i,0],
+                    out_tau = &out_view[i, nfreq]
+                )
     except:
         print(
             "There was a problem!",
