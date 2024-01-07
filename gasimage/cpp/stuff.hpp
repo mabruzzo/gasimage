@@ -40,6 +40,57 @@ struct LinInterpPartitionFn {
 };
 
 
+/// an aggregate-ish struct used to group together arguments for radiative
+/// transfer functions
+///
+/// At present, the idea is to aggregate the values extracted from the grid
+/// into this function.
+///
+/// @note
+/// In the future, it would be more flexible to instead store the 3D grid
+/// values inside a struct and access them as they are needed. This would:
+/// 1. facillitate higher order integration (e.g. trilinear of the LOS velocity
+///    interpolation).
+/// 2. allow us to move all of the ray-tracing code entirely to C++ (this
+///    should provide some performance improvements, and will clean up the
+///    usage of templates...)
+/// This transition will require us to track the strides of each array
+struct RayAlignedProps{
+  /// the number of segments that the ray has been divided into (i.e. the number
+  /// of cell intersections). It's also the length of the arrays directly
+  /// stored as members of this struct
+  long num_segments;
+
+  /// @defgroup RayAlignedValues
+  ///  Each of these entries has a length given by `this->num_segments`
+  ///@{
+
+  /// The distance travelled by the ray through each cell (in cm)
+  const double* dz;
+  /// bulk velocity of the gas in cells along the ray (in cm/s).
+  const double* vLOS;
+  /// number density of the given species in cells along the ray (in cm**-3).
+  /// The exact meaning of this argument is context dependent
+  const double* ndens;
+  /// The kinetic temperature of the gas in cells along the ray (in K)
+  const double* kinetic_T;
+  /// The precomputed doppler parameter (aka Doppler broadening parameter) of
+  /// the gas in cells along the ray (in cm/s)
+  ///
+  /// @note
+  /// The doppler broadening parameter is often abbreviated with the variable
+  /// ``b``. ``b/sqrt(2)`` specifies the standard deviation of the line-of-sight
+  /// velocity component (due to thermal motions). When this quantity is
+  /// multiplied by ``rest_freq/c_cgs`` (i.e. the inverse of a transition's
+  /// rest-frame wavelength), you get what Rybicki and Lightman call the
+  /// "Doppler width". This alternative quantity is a factor of ``sqrt(2)``
+  /// larger than the standard deviation of the frequency profile.
+  const double* precomputed_doppler_parameter_b;
+  ///@}
+
+};
+
+
 /// evaluate the partition function at the specified value
 ///
 /// we assume units of Kelvin! If the user specifies a value outside of the
@@ -178,13 +229,8 @@ inline Ndens_And_Ratio ndens_and_ratio_from_partition(
 void optically_thin_21cm_ray_spectrum_impl(const C_LineProps line_props,
                                            const long nfreq,
                                            const double* obs_freq,
-                                           const long num_segments,
-                                           const double* vLOS,
-                                           const double* ndens_HI_n1state,
-                                           const double* doppler_parameter_b,
-                                           const double* dz,
-                                           double* out,
-                                           const double* kinetic_T) noexcept
+                                           const RayAlignedProps ray_aligned_data,
+                                           double* out) noexcept
 {
   // set all values in the output array to 0.0
   for(long freq_i = 0; freq_i < nfreq; freq_i++) { out[freq_i] = 0.0; }
@@ -201,11 +247,12 @@ void optically_thin_21cm_ray_spectrum_impl(const C_LineProps line_props,
   //      - the number density in the higher-energy state is $n_2$
   //      - the rate of spontaneous emission is $A_{21}$
   // We adopt the latter notation
+  const double* ndens_HI_n1state = ray_aligned_data.ndens;
 
   const double rest_freq = line_props.freq_Hz;
 
   // iterate over gas-elements
-  for(long pos_i = 0; pos_i < num_segments; pos_i++) {
+  for(long pos_i = 0; pos_i < ray_aligned_data.num_segments; pos_i++) {
 
     // compute ndens in state 2 (the higher energy state), by combining info
     // from following points:
@@ -219,11 +266,12 @@ void optically_thin_21cm_ray_spectrum_impl(const C_LineProps line_props,
     const double n_2 = 0.75 * ndens_HI_n1state[pos_i];
 
     // fetch the length of the path through the current gas-element
-    const double cur_dz = dz[pos_i];
+    const double cur_dz = ray_aligned_data.dz[pos_i];
 
     // construct the profile for the current gas-element
     const LineProfileStruct prof = prep_LineProfHelper
-      (rest_freq, doppler_parameter_b[pos_i], vLOS[pos_i]);
+      (rest_freq, ray_aligned_data.precomputed_doppler_parameter_b[pos_i],
+       ray_aligned_data.vLOS[pos_i]);
 
     for (long freq_i = 0; freq_i < nfreq; freq_i++) { // iterate over obs_freq
       double profile_val = eval_line_profile(obs_freq[freq_i], rest_freq, prof);
@@ -409,12 +457,7 @@ void clean_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj)
 int generate_noscatter_spectrum_impl(C_LineProps line_props,
                                      const long nfreq,
                                      const double* obs_freq,
-                                     const long num_segments,
-                                     const double* vLOS,
-                                     const double* ndens,
-                                     const double* kinetic_T,
-                                     const double* doppler_parameter_b,
-                                     const double* dz,
+                                     const RayAlignedProps ray_aligned_data,
                                      const LinInterpPartitionFn partition_fn_pack,
                                      double* out_integrated_source,
                                      double* out_tau)
@@ -439,7 +482,7 @@ int generate_noscatter_spectrum_impl(C_LineProps line_props,
 
   double* alpha_nu_cgs = new double[nfreq];
 
-  for (long pos_i = 0; pos_i < num_segments; pos_i++) {
+  for (long pos_i = 0; pos_i < ray_aligned_data.num_segments; pos_i++) {
 
     Ndens_And_Ratio tmp_pair;
     if (true) {
@@ -448,9 +491,9 @@ int generate_noscatter_spectrum_impl(C_LineProps line_props,
       // -> treat ndens as number density of particles described by
       //    partition function
       // -> assume LTE
-      tmp_pair = ndens_and_ratio_from_partition(partition_fn_pack,
-                                                kinetic_T[pos_i], ndens[pos_i],
-                                                line_props);
+      tmp_pair = ndens_and_ratio_from_partition
+        (partition_fn_pack, ray_aligned_data.kinetic_T[pos_i],
+         ray_aligned_data.ndens[pos_i], line_props);
     }
 
     // Using equations 1.78 and 1.79 of Rybicki and Lighman to get
@@ -467,13 +510,13 @@ int generate_noscatter_spectrum_impl(C_LineProps line_props,
                            B12_cgs * stim_emission_correction) / (4* M_PI);
 
     // construct the profile for the current gas-element
-    LineProfileStruct prof = prep_LineProfHelper(rest_freq_Hz,
-                                                 doppler_parameter_b[pos_i],
-                                                 vLOS[pos_i]);
+    LineProfileStruct prof = prep_LineProfHelper
+      (rest_freq_Hz, ray_aligned_data.precomputed_doppler_parameter_b[pos_i],
+       ray_aligned_data.vLOS[pos_i]);
 
     for (long freq_i = 0; freq_i < nfreq; freq_i++) {
       double profile_val = eval_line_profile(obs_freq[freq_i], rest_freq_Hz,
-                                            prof);
+                                             prof);
       alpha_nu_cgs[freq_i] = alpha_center * profile_val;
     }
 
@@ -509,7 +552,8 @@ int generate_noscatter_spectrum_impl(C_LineProps line_props,
     // now that we know the source-function and the absorption coefficient,
     // let's compute the integral(s) for the current section of the array
     update_IntegralStructNoScatterRT(accumulator, alpha_nu_cgs,
-                                     source_func_cgs, dz[pos_i]);
+                                     source_func_cgs,
+                                     ray_aligned_data.dz[pos_i]);
 
   }
 

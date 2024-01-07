@@ -78,18 +78,22 @@ cdef extern from "cpp/stuff.hpp":
     double eval_line_profile(double obs_freq, double rest_freq,
                              LineProfileStruct prof)
 
+    struct RayAlignedProps:
+        long num_segments
+        const double* dz
+        const double* vLOS
+        const double* ndens
+        const double* kinetic_T
+        const double* precomputed_doppler_parameter_b
+
     void optically_thin_21cm_ray_spectrum_impl(
-        const C_LineProps line_props, const long nfreq,
-        const double* obs_freq, const long num_segments,
-        const double* vLOS, const double* ndens_HI_n1state,
-        const double* doppler_parameter_b, const double* dz,
-        double* out, const double* kinetic_T)
+        const C_LineProps line_props, const long nfreq, const double* obs_freq,
+        const RayAlignedProps ray_aligned_data, double* out)
 
     int generate_noscatter_spectrum_impl(
         C_LineProps line_props, const long nfreq, const double* obs_freq,
-        const long num_segments, const double* vLOS, const double* ndens,
-        const double* kinetic_T, const double* doppler_parameter_b,
-        const double* dz, const LinInterpPartitionFn partition_fn_pack,
+        const RayAlignedProps ray_aligned_data,
+        const LinInterpPartitionFn partition_fn_pack,
         double* out_integrated_source, double* out_tau)
 
 cdef C_LineProps get_LineProps_struct(object line_props) except *:
@@ -101,6 +105,31 @@ cdef C_LineProps get_LineProps_struct(object line_props) except *:
     out.energy_lo_erg = line_props.energy_lo_erg
     out.A21_Hz = line_props.A_Hz
     out.B12_cgs = line_props.B_absorption_cgs
+    return out
+
+cdef RayAlignedProps get_RayAlignedProps(
+    long num_segments,
+    const double[::1] dz, const double[::1] vLOS, const double[::1] ndens,
+    const double[::1] kinetic_T,
+    const double[::1] precomputed_doppler_parameter_b
+) except *:
+
+    cdef RayAlignedProps out
+    out.num_segments = num_segments
+    out.dz = &dz[0]
+    out.vLOS = &vLOS[0]
+    out.ndens = &ndens[0]
+    if kinetic_T is None:
+        out.kinetic_T = NULL
+    else:
+        out.kinetic_T = &kinetic_T[0]
+
+    if precomputed_doppler_parameter_b is None:
+        out.precomputed_doppler_parameter_b = NULL
+    else:
+        out.precomputed_doppler_parameter_b = (
+            &precomputed_doppler_parameter_b[0]
+        )
     return out
 
 def _nosubtype_isinstance(obj, classinfo):
@@ -297,15 +326,14 @@ def _generate_opticallythin_spectrum_cy(object line_props,
     """
     cdef C_LineProps c_line_props = get_LineProps_struct(line_props)
 
-    cdef const double* kinetic_T_ptr = NULL
-    if kinetic_T is not None:
-        kinetic_T_ptr = &kinetic_T[0]
+    cdef RayAlignedProps ray_data = get_RayAlignedProps(
+        num_segments = dz.shape[0],
+        dz = dz, vLOS = vLOS, ndens = ndens_HI_n1state, kinetic_T = kinetic_T,
+        precomputed_doppler_parameter_b = doppler_parameter_b
+    )
     optically_thin_21cm_ray_spectrum_impl(c_line_props,
                                           obs_freq.shape[0], &obs_freq[0],
-                                          dz.shape[0], &vLOS[0],
-                                          &ndens_HI_n1state[0],
-                                          &doppler_parameter_b[0], &dz[0],
-                                          &out[0], kinetic_T_ptr)
+                                          ray_data, &out[0])
     return out
 
 from .ray_traversal import traverse_grid, max_num_intersections
@@ -611,8 +639,8 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
 
     cdef double[:,::1] out_view = out
 
-    # declaring types used by the nested loop:
-    cdef long i0, i1, i2
+    # declaring types used within the (nested) loop:
+    cdef long i0, i1, i2, num_cells
     cdef const double[::1] cur_uvec_view
     cdef long[:,:] idx3D_view
 
@@ -620,12 +648,19 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
     cdef long max_num = max_num_intersections(spatial_grid_props.grid_shape)
     cdef dict npy_buffers = dict(
         (k, np.empty(shape = (max_num,), dtype = 'f8'))
-        for k in ['vlos', 'ndens', 'kinetic_T', 'doppler_parameter'])
+        for k in ['dz_cm', 'vlos', 'ndens', 'kinetic_T', 'doppler_parameter'])
 
+    cdef double[::1] dz_cm = npy_buffers['dz_cm']
     cdef double[::1] vlos = npy_buffers['vlos']
     cdef double[::1] ndens = npy_buffers['ndens']
     cdef double[::1] kinetic_T = npy_buffers['kinetic_T']
     cdef double[::1] cur_doppler_parameter_b = npy_buffers['doppler_parameter']
+
+    cdef RayAlignedProps ray_data = get_RayAlignedProps(
+        num_segments = 0,
+        dz = dz_cm, vLOS = vlos, ndens = ndens, kinetic_T = kinetic_T,
+        precomputed_doppler_parameter_b = cur_doppler_parameter_b
+    )
 
     cdef double cm_per_length_unit = spatial_grid_props.cm_per_length_unit
 
@@ -643,22 +678,33 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
             ray_start = full_ray_start[i,:]
             ray_uvec = full_ray_uvec[i,:]
 
-            tmp_idx, dz = traverse_grid(line_uvec = ray_uvec,
-                                        line_start = ray_start,
-                                        spatial_props = spatial_grid_props)
+            tmp_idx, tmp_dz = traverse_grid(line_uvec = ray_uvec,
+                                            line_start = ray_start,
+                                            spatial_props = spatial_grid_props)
             idx3D_view = tmp_idx
 
             # convert dz to cm to avoid problems later
-            dz *= cm_per_length_unit
+            tmp_dz *= cm_per_length_unit
+
+            num_cells = tmp_dz.shape[0]
+            ray_data.num_segments = num_cells
 
             doppler_parameter_b.get_vals_cm_per_s(
                 idx3Darr = idx3D_view, out = cur_doppler_parameter_b
             )
 
             # read the quantities along the ray into the 1d buffer
+            # -> explicitly access the buffers through the memoryviews rather
+            #    than the pointers stored in the ray_data struct, because the
+            #    pointers are all `const double*`, to denote that they are
+            #    read-only to the actual ray-tracing functions
             cur_uvec_view = ray_uvec
             with cython.boundscheck(False), cython.wraparound(False):
-                for j in range(dz.size):
+                for j in range(ray_data.num_segments):
+                    # convert dz to cm to avoid problems later
+                    dz_cm[j] = tmp_dz[j] 
+
+                    # extract the jth element along the ray
                     i0 = idx3D_view[0,j]
                     i1 = idx3D_view[1,j]
                     i2 = idx3D_view[2,j]
@@ -683,7 +729,7 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                     obs_freq = obs_freq_Hz, vLOS = vlos,
                     ndens_HI_n1state = ndens,
                     doppler_parameter_b = cur_doppler_parameter_b,
-                    dz = dz,
+                    dz = dz_cm[:num_cells],
                     out = out_view[i,:])
             else:
                 # sanity check!
@@ -696,7 +742,7 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                     ndens = ndens,
                     kinetic_T = kinetic_T,
                     doppler_parameter_b = cur_doppler_parameter_b,
-                    dz = dz,
+                    dz = dz_cm[:num_cells],
                     level_pops_arg = partition_func,
                     out_integrated_source = out_view[i,:nfreq],
                     out_tau = out_view[i, nfreq:])
@@ -822,15 +868,19 @@ def _generate_noscatter_spectrum_cy(object line_props,
     cdef PyLinInterpPartitionFunc partition_fn
     cdef LinInterpPartitionFn partition_fn_pack
 
+    cdef RayAlignedProps ray_data = get_RayAlignedProps(
+        num_segments = dz.shape[0],
+        dz = dz, vLOS = vLOS, ndens = ndens, kinetic_T = kinetic_T,
+        precomputed_doppler_parameter_b = doppler_parameter_b
+    )
+
     if isinstance(level_pops_arg, PyLinInterpPartitionFunc):
         partition_fn = <PyLinInterpPartitionFunc>level_pops_arg
         partition_fn_pack = partition_fn.get_partition_fn_struct()
+
         errcode = generate_noscatter_spectrum_impl(
-            c_line_props, obs_freq.shape[0], &obs_freq[0],
-            dz.shape[0], &vLOS[0], &ndens[0], &kinetic_T[0],
-            &doppler_parameter_b[0], &dz[0],
-            partition_fn_pack,
-            &out_integrated_source[0], &out_tau[0])
+            c_line_props, obs_freq.shape[0], &obs_freq[0], ray_data,
+            partition_fn_pack, &out_integrated_source[0], &out_tau[0])
     else:
         raise ValueError("unallowed/untested level_pops_arg")
 
