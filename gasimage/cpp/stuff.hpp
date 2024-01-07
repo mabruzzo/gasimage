@@ -175,6 +175,66 @@ inline Ndens_And_Ratio ndens_and_ratio_from_partition(
 
 } // anonymous namespace
 
+void optically_thin_21cm_ray_spectrum_impl(const C_LineProps line_props,
+                                           const long nfreq,
+                                           const double* obs_freq,
+                                           const long num_segments,
+                                           const double* vLOS,
+                                           const double* ndens_HI_n1state,
+                                           const double* doppler_parameter_b,
+                                           const double* dz,
+                                           double* out,
+                                           const double* kinetic_T) noexcept
+{
+  // set all values in the output array to 0.0
+  for(long freq_i = 0; freq_i < nfreq; freq_i++) { out[freq_i] = 0.0; }
+
+  // there are 2 sets of equivalent notation that are commonly used to describe
+  // the Hydrogen spin-flip transition.
+  // -> specific notation (tailored to this particular transition):
+  //      - the number density in the lower-energy spin-0 state is $n_0$
+  //      - the number density in the higher-energy spin-1 state is $n_1$
+  //      - the rate of spontaneous emission is $A_{10}$
+  // -> generic notation (that can describe any bound-bound transition):
+  //      - the states are enumerated as 1 and 2
+  //      - the number density in the lower-energy state is $n_1$
+  //      - the number density in the higher-energy state is $n_2$
+  //      - the rate of spontaneous emission is $A_{21}$
+  // We adopt the latter notation
+
+  const double rest_freq = line_props.freq_Hz;
+
+  // iterate over gas-elements
+  for(long pos_i = 0; pos_i < num_segments; pos_i++) {
+
+    // compute ndens in state 2 (the higher energy state), by combining info
+    // from following points:
+    // - this fn ASSUMES that ``exp(-h_cgs*rest_freq / (kboltz_cgs * T_spin))``
+    //   is approximately 1 (this is a fairly decent assumption)
+    // - consequently:                                  n_2 / n_1 == g_2 / g_1
+    // - for 21cm transition, g_2 = 3 and g_1 = 1
+    // - since n_1 and n_2 are the only states:               n1 + n2 == ndens
+    // -> Putting these together:                       n_2 / 3 + n_2 == ndens
+    //                       OR                           4 * n_2 / 3 == ndens
+    const double n_2 = 0.75 * ndens_HI_n1state[pos_i];
+
+    // fetch the length of the path through the current gas-element
+    const double cur_dz = dz[pos_i];
+
+    // construct the profile for the current gas-element
+    const LineProfileStruct prof = prep_LineProfHelper
+      (rest_freq, doppler_parameter_b[pos_i], vLOS[pos_i]);
+
+    for (long freq_i = 0; freq_i < nfreq; freq_i++) { // iterate over obs_freq
+      double profile_val = eval_line_profile(obs_freq[freq_i], rest_freq, prof);
+      double cur_jnu = (HPLANCK_CGS * rest_freq * n_2 * line_props.A21_Hz *
+                        profile_val * QUARTER_DIV_PI);
+      out[freq_i] += cur_jnu * cur_dz;
+    }
+  }
+
+}
+
 
 /// The following struct is used to solve for the optical depth and the
 /// integrated source_function diminished by absorption.
