@@ -486,61 +486,112 @@ cdef class RayDataExtractor:
     cdef UnitConversions unit_conversions
     cdef object spatial_grid_props
 
-    cdef void get_ray_data(self, RayAlignedProps* ray_data,
-                           object ray_start, object ray_uvec) except *:
-        try:
-            tmp_idx, tmp_dz = traverse_grid(
-                line_uvec = ray_uvec, line_start = ray_start,
-                spatial_props = self.spatial_grid_props)
-        except:
-            print(
-                "There was a problem!",
-                f'line_uvec = {np.array2string(ray_uvec, floatmode = "unique")}',
-                f'line_start = {np.array2string(ray_start, floatmode = "unique")}',
-                f'spatial_grid_props = {self.spatial_grid_props!r}',
-                sep = '\n  '
-            )
-            raise
+    # these are buffers that are reused. Problems could arise with these if we
+    # supported multithreading...
+    cdef object ray_start_buf_npy
+    cdef object ray_uvec_buf_npy
 
-        cdef long[:,:] idx3D_view = tmp_idx
-        cdef double[::1] tmp_dz_view = tmp_dz
+    @staticmethod
+    cdef RayDataExtractor create(GridData grid_data,
+                                 UnitConversions unit_conversions,
+                                 object spatial_grid_props):
+        out = RayDataExtractor()
+        out.grid_data = grid_data
+        out.unit_conversions = unit_conversions
+        out.spatial_grid_props = spatial_grid_props
+        out.ray_start_buf_npy = np.empty(shape = (3,), dtype = 'f8')
+        out.ray_uvec_buf_npy = np.empty(shape = (3,), dtype = 'f8')
+        return out
 
-        cdef double cm_per_length_unit = self.spatial_grid_props.cm_per_length_unit
+cdef void get_ray_data_helper(RayAlignedProps* ray_data,
+                              const double * ray_start,
+                              const double * ray_uvec,
+                              RayDataExtractor obj):
 
-        cdef long i0, i1, i2, j
+    cdef Py_ssize_t i
+    for i in range(3):
+        obj.ray_start_buf_npy[i] = ray_start[i]
+        obj.ray_uvec_buf_npy[i] = ray_uvec[i]
 
-        ray_data.num_segments = tmp_dz_view.shape[0]
+    tmp_idx, tmp_dz = traverse_grid(line_uvec = obj.ray_uvec_buf_npy,
+                                    line_start = obj.ray_start_buf_npy,
+                                    spatial_props = obj.spatial_grid_props)
 
-        # read the quantities along the ray into the 1d buffer
-        # -> explicitly access the buffers through the memoryviews rather
-        #    than the pointers stored in the ray_data struct, because the
-        #    pointers are all `const double*`, to denote that they are
-        #    read-only to the actual ray-tracing functions
-        cdef const double[::1] cur_uvec_view = ray_uvec
-        with cython.boundscheck(False), cython.wraparound(False):
-            for j in range(ray_data.num_segments):
-                # convert dz to cm to avoid problems later
-                ray_data.dz[j] = tmp_dz_view[j] * cm_per_length_unit
+    cdef long[:,:] idx3D_view = tmp_idx
+    cdef double[::1] tmp_dz_view = tmp_dz
 
-                # extract the jth element along the ray
-                i0 = idx3D_view[0,j]
-                i1 = idx3D_view[1,j]
-                i2 = idx3D_view[2,j]
+    cdef double cm_per_length_unit = obj.spatial_grid_props.cm_per_length_unit
 
-                # should probably confirm correctness of velocity sign
-                ray_data.vLOS[j] = (
-                    cur_uvec_view[0] * self.grid_data.vx[i0,i1,i2] +
-                    cur_uvec_view[1] * self.grid_data.vy[i0,i1,i2] +
-                    cur_uvec_view[2] * self.grid_data.vz[i0,i1,i2]
-                ) * self.unit_conversions.vel_to_cm_per_s_factor
+    cdef long i0, i1, i2, j
 
-                ray_data.ndens[j] = (self.grid_data.ndens[i0,i1,i2] *
-                                     self.unit_conversions.ndens_to_cc_factor)
-                ray_data.kinetic_T[j] = (
-                    self.grid_data.kinetic_T[i0,i1,i2] *
-                    self.unit_conversions.kinetic_T_to_K_factor)
-                ray_data.precomputed_doppler_parameter_b[j] = (
-                    self.grid_data.precomputed_doppler_parameter[i0,i1,i2])
+    ray_data.num_segments = tmp_dz_view.shape[0]
+
+    # read the quantities along the ray into the 1d buffer
+    with cython.boundscheck(False), cython.wraparound(False):
+        for j in range(ray_data.num_segments):
+            # convert dz to cm to avoid problems later
+            ray_data.dz[j] = tmp_dz_view[j] * cm_per_length_unit
+
+            # extract the jth element along the ray
+            i0 = idx3D_view[0,j]
+            i1 = idx3D_view[1,j]
+            i2 = idx3D_view[2,j]
+
+            # should probably confirm correctness of velocity sign
+            ray_data.vLOS[j] = (
+                ray_uvec[0] * obj.grid_data.vx[i0,i1,i2] +
+                ray_uvec[1] * obj.grid_data.vy[i0,i1,i2] +
+                ray_uvec[2] * obj.grid_data.vz[i0,i1,i2]
+            ) * obj.unit_conversions.vel_to_cm_per_s_factor
+
+            ray_data.ndens[j] = (obj.grid_data.ndens[i0,i1,i2] *
+                                 obj.unit_conversions.ndens_to_cc_factor)
+            ray_data.kinetic_T[j] = (
+                obj.grid_data.kinetic_T[i0,i1,i2] *
+                obj.unit_conversions.kinetic_T_to_K_factor)
+            ray_data.precomputed_doppler_parameter_b[j] = (
+                obj.grid_data.precomputed_doppler_parameter[i0,i1,i2])
+
+# Based on the ray_start and ray_uvec, and ray_data_extractor arguments,
+# compute the data along the ray and store the result in ray_data (which should
+# be preallocated - each array in it should be long enough for the longest
+# possible ray)
+cdef void get_ray_data(RayAlignedProps* ray_data,
+                       const double * ray_start,
+                       const double * ray_uvec,
+                       void * ray_data_extractor):
+    get_ray_data_helper(ray_data, ray_start, ray_uvec,
+                        <RayDataExtractor>ray_data_extractor)
+
+
+cdef extern from "cpp/generate_ray_spectra.hpp":
+    cdef cppclass MathVecCollecView:
+        MathVecCollecView()
+        MathVecCollecView(const double*, long)
+        const double* operator[](long i) const
+        long length() const
+
+cdef MathVecCollecView build_MathVecCollecView(object npy_vec_collec) except *:
+    dtype = np.dtype('=f8')
+    expected_strides = (3*dtype.itemsize, dtype.itemsize)
+    if not _nosubtype_isinstance(npy_vec_collec, np.ndarray):
+        raise TypeError("build_MathVecCollecView expects a numpy array as an "
+                        "argument")
+    elif (npy_vec_collec.ndim != 2) or (npy_vec_collec.shape[1] != 3):
+        raise ValueError("npy_vec_collec must be an array of shape (N,3), "
+                         "where N is a positive integer")
+    elif (npy_vec_collec.dtype != dtype):
+        raise ValueError("npy_vec_collec must hold 64-bit floats")
+    elif npy_vec_collec.strides != expected_strides:
+        raise ValueError(
+            "all elements of npy_vec_collec must be C_CONTIGUOUS. Actual " +
+            "strides are " + repr(npy_vec_collec.strides) + ", while the "
+            "expected strides are " + repr(expected_strides)
+        )
+
+    cdef const double[:,::1] temp = npy_vec_collec
+    cdef MathVecCollecView out = MathVecCollecView(&temp[0,0], temp.shape[0])
+    return out
 
 def generate_ray_spectrum(grid, spatial_grid_props,
                           full_ray_start, full_ray_uvec, line_props,
@@ -675,11 +726,6 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
 
     cdef double[:,::1] out_view = out
 
-    # declaring types used within the (nested) loop:
-    cdef const double[::1] cur_uvec_view
-    cdef long[:,:] idx3D_view
-    cdef const double[::1] tmp_dz_view
-
     # allocate 1d buffers used to hold the various quantities along the ray
     cdef long max_num = max_num_intersections(spatial_grid_props.grid_shape)
     cdef dict npy_buffers = dict(
@@ -693,30 +739,22 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
         precomputed_doppler_parameter_b = npy_buffers['doppler_parameter']
     )
 
-    cdef double cm_per_length_unit = spatial_grid_props.cm_per_length_unit
-
-    cdef RayDataExtractor ray_data_extractor = RayDataExtractor()
-    ray_data_extractor.grid_data = grid_data
-    ray_data_extractor.unit_conversions = unit_conversions
-    ray_data_extractor.spatial_grid_props = spatial_grid_props
+    cdef RayDataExtractor ray_data_extractor = RayDataExtractor.create(
+        grid_data = grid_data, unit_conversions = unit_conversions,
+        spatial_grid_props = spatial_grid_props
+    )
 
     cdef C_LineProps c_line_props = get_LineProps_struct(line_props)
 
-    # some additional optimizations are definitely still possible:
-    # - we can redefine traverse_grid so that it is a cpdef-ed function (avoid
-    #   python overhead). We could also define a variant that
-    #     (i) specifies tmp_idx with a more optimal layout
-    #     (ii) lets us preallocate tmp_idx and dz
-    # - we can preallocate buffers for storing the data along rays. Then we can
-    #   avoid using numpy's fancy-indexing and directly index ourselves
+    cdef MathVecCollecView ray_start_collection = build_MathVecCollecView(
+        full_ray_start)
+    cdef MathVecCollecView ray_uvec_collection = build_MathVecCollecView(
+        full_ray_uvec)
 
     for i in range(nrays):
-        ray_start = full_ray_start[i,:]
-        ray_uvec = full_ray_uvec[i,:]
 
-        ray_data_extractor.get_ray_data(&ray_data,
-                                        full_ray_start[i,:],
-                                        full_ray_uvec[i,:])
+        get_ray_data(&ray_data, ray_start_collection[i],
+                     ray_uvec_collection[i], <void*>ray_data_extractor)
 
         if not using_precalculated_doppler:
             for j in range(ray_data.num_segments):

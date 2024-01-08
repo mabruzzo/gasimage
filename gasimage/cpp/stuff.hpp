@@ -1,3 +1,5 @@
+#pragma once
+
 #include "err.hpp"
 #include <algorithm>   // std::distance, std::lower_bound
 #include <cmath>       // std::exp, std::isnan, std::log10, std::sqrt

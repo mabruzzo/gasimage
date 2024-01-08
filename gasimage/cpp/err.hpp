@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cstdarg> // va_list and friends
 #include <cstdio>
 #include <cstdlib> // abort
