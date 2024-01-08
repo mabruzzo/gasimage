@@ -67,14 +67,14 @@ struct RayAlignedProps{
   ///@{
 
   /// The distance travelled by the ray through each cell (in cm)
-  const double* dz;
+  double* dz;
   /// bulk velocity of the gas in cells along the ray (in cm/s).
-  const double* vLOS;
+  double* vLOS;
   /// number density of the given species in cells along the ray (in cm**-3).
   /// The exact meaning of this argument is context dependent
-  const double* ndens;
+  double* ndens;
   /// The kinetic temperature of the gas in cells along the ray (in K)
-  const double* kinetic_T;
+  double* kinetic_T;
   /// The precomputed doppler parameter (aka Doppler broadening parameter) of
   /// the gas in cells along the ray (in cm/s)
   ///
@@ -86,7 +86,7 @@ struct RayAlignedProps{
   /// rest-frame wavelength), you get what Rybicki and Lightman call the
   /// "Doppler width". This alternative quantity is a factor of ``sqrt(2)``
   /// larger than the standard deviation of the frequency profile.
-  const double* precomputed_doppler_parameter_b;
+  double* precomputed_doppler_parameter_b;
   ///@}
 
 };

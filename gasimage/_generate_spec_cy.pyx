@@ -74,11 +74,11 @@ cdef extern from "cpp/stuff.hpp":
 
     struct RayAlignedProps:
         long num_segments
-        const double* dz
-        const double* vLOS
-        const double* ndens
-        const double* kinetic_T
-        const double* precomputed_doppler_parameter_b
+        double* dz
+        double* vLOS
+        double* ndens
+        double* kinetic_T
+        double* precomputed_doppler_parameter_b
 
     void optically_thin_21cm_ray_spectrum_impl(
         const C_LineProps line_props, const long nfreq, const double* obs_freq,
@@ -103,9 +103,9 @@ cdef C_LineProps get_LineProps_struct(object line_props) except *:
 
 cdef RayAlignedProps get_RayAlignedProps(
     long num_segments,
-    const double[::1] dz, const double[::1] vLOS, const double[::1] ndens,
-    const double[::1] kinetic_T,
-    const double[::1] precomputed_doppler_parameter_b
+    double[::1] dz, double[::1] vLOS, double[::1] ndens,
+    double[::1] kinetic_T,
+    double[::1] precomputed_doppler_parameter_b
 ) except *:
 
     cdef RayAlignedProps out
@@ -271,12 +271,12 @@ def full_line_profile_evaluation(obs_freq, doppler_parameter_b,
 
 def _generate_opticallythin_spectrum_cy(object line_props,
                                         const double[::1] obs_freq,
-                                        const double[::1] vLOS,
-                                        const double[::1] ndens_HI_n1state,
-                                        const double[::1] doppler_parameter_b,
-                                        const double[::1] dz,
+                                        double[::1] vLOS,
+                                        double[::1] ndens_HI_n1state,
+                                        double[::1] doppler_parameter_b,
+                                        double[::1] dz,
                                         double[::1] out,
-                                        const double[::1] kinetic_T = None):
+                                        double[::1] kinetic_T = None):
     """
     Compute specific intensity (aka monochromatic intensity) from data measured
     along the path of a single ray.
@@ -468,6 +468,79 @@ class NdensStrategy(Enum):
     # -> we assume that the ratio of number densities is directly given by the
     #    statistical weights...
 
+cdef class GridData:
+    cdef const double[:,:,::1] vx
+    cdef const double[:,:,::1] vy
+    cdef const double[:,:,::1] vz
+    cdef const double[:,:,:]   precomputed_doppler_parameter
+    cdef const double[:,:,::1] ndens
+    cdef const double[:,:,::1] kinetic_T
+
+cdef struct UnitConversions:
+    double vel_to_cm_per_s_factor
+    double ndens_to_cc_factor
+    double kinetic_T_to_K_factor
+
+cdef class RayDataExtractor:
+    cdef GridData grid_data
+    cdef UnitConversions unit_conversions
+    cdef object spatial_grid_props
+
+    cdef void get_ray_data(self, RayAlignedProps* ray_data,
+                           object ray_start, object ray_uvec) except *:
+        try:
+            tmp_idx, tmp_dz = traverse_grid(
+                line_uvec = ray_uvec, line_start = ray_start,
+                spatial_props = self.spatial_grid_props)
+        except:
+            print(
+                "There was a problem!",
+                f'line_uvec = {np.array2string(ray_uvec, floatmode = "unique")}',
+                f'line_start = {np.array2string(ray_start, floatmode = "unique")}',
+                f'spatial_grid_props = {self.spatial_grid_props!r}',
+                sep = '\n  '
+            )
+            raise
+
+        cdef long[:,:] idx3D_view = tmp_idx
+        cdef double[::1] tmp_dz_view = tmp_dz
+
+        cdef double cm_per_length_unit = self.spatial_grid_props.cm_per_length_unit
+
+        cdef long i0, i1, i2, j
+
+        ray_data.num_segments = tmp_dz_view.shape[0]
+
+        # read the quantities along the ray into the 1d buffer
+        # -> explicitly access the buffers through the memoryviews rather
+        #    than the pointers stored in the ray_data struct, because the
+        #    pointers are all `const double*`, to denote that they are
+        #    read-only to the actual ray-tracing functions
+        cdef const double[::1] cur_uvec_view = ray_uvec
+        with cython.boundscheck(False), cython.wraparound(False):
+            for j in range(ray_data.num_segments):
+                # convert dz to cm to avoid problems later
+                ray_data.dz[j] = tmp_dz_view[j] * cm_per_length_unit
+
+                # extract the jth element along the ray
+                i0 = idx3D_view[0,j]
+                i1 = idx3D_view[1,j]
+                i2 = idx3D_view[2,j]
+
+                # should probably confirm correctness of velocity sign
+                ray_data.vLOS[j] = (
+                    cur_uvec_view[0] * self.grid_data.vx[i0,i1,i2] +
+                    cur_uvec_view[1] * self.grid_data.vy[i0,i1,i2] +
+                    cur_uvec_view[2] * self.grid_data.vz[i0,i1,i2]
+                ) * self.unit_conversions.vel_to_cm_per_s_factor
+
+                ray_data.ndens[j] = (self.grid_data.ndens[i0,i1,i2] *
+                                     self.unit_conversions.ndens_to_cc_factor)
+                ray_data.kinetic_T[j] = (
+                    self.grid_data.kinetic_T[i0,i1,i2] *
+                    self.unit_conversions.kinetic_T_to_K_factor)
+                ray_data.precomputed_doppler_parameter_b[j] = (
+                    self.grid_data.precomputed_doppler_parameter[i0,i1,i2])
 
 def generate_ray_spectrum(grid, spatial_grid_props,
                           full_ray_start, full_ray_uvec, line_props,
@@ -494,10 +567,14 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     # Prefetch some quantities and do some work to figure out unit conversions
     # ahead of time:
 
-    tmp_ndens = grid[ndens_field]
+    cdef GridData grid_data = GridData()
+    cdef UnitConversions unit_conversions
+
     # get factor that must be multiplied by this ndens to convert to cm**-3
-    ndens_to_cc_factor = float(tmp_ndens.uq.to('cm**-3').v)
-    ndens_grid = tmp_ndens.ndview
+    unit_conversions.ndens_to_cc_factor = float(
+        grid[ndens_field].uq.to('cm**-3').v)
+    ndens_grid = grid[ndens_field]
+    grid_data.ndens = ndens_grid
 
     # load in velocity information:
 
@@ -506,9 +583,11 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     tmp_vz = grid['gas', 'velocity_z']
     assert ((tmp_vx.units == tmp_vy.units) and (tmp_vx.units == tmp_vx.units))
     # compute the factor that must be multiplied by velocity to convert to cm/s
-    vel_to_cm_per_s_factor = float(tmp_vx.uq.to('cm/s').v)
+    unit_conversions.vel_to_cm_per_s_factor = float(tmp_vx.uq.to('cm/s').v)
     # now, get versions of velocity components without units
-    vx, vy, vz = tmp_vx.ndview, tmp_vy.ndview, tmp_vz.ndview
+    grid_data.vx = tmp_vx.ndview
+    grid_data.vy = tmp_vy.ndview
+    grid_data.vz = tmp_vz.ndview
 
     if legacy_optically_thin_spin_flip:
         assert ndens_strat == NdensStrategy.SpecialLegacySpinFlipCase
@@ -521,7 +600,8 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     # be useful to avoid loading it in these cases (to handle cases where the
     # temperature field isn't defined)
     kinetic_T = grid['gas', 'temperature']
-    kinetic_T_to_K_factor = float(kinetic_T.uq.to('K').v)
+    unit_conversions.kinetic_T_to_K_factor = float(kinetic_T.uq.to('K').v)
+    grid_data.kinetic_T = kinetic_T.ndview
 
     precomputed_doppler_parameter_grid = _try_precompute_doppler_parameter(
         grid, approach = doppler_parameter_b,
@@ -532,7 +612,11 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     )
     if not using_precalculated_doppler: 
         precomputed_doppler_parameter_grid = np.broadcast_to(
-            1.0, (vx.shape[0], vx.shape[1], vx.shape[2]))
+            1.0, (tmp_vx.shape[0], tmp_vx.shape[1], tmp_vx.shape[2]))
+    grid_data.precomputed_doppler_parameter = (
+        precomputed_doppler_parameter_grid
+    )
+    
 
     return _generate_ray_spectrum(
         legacy_optically_thin_spin_flip = legacy_optically_thin_spin_flip,
@@ -541,14 +625,9 @@ def generate_ray_spectrum(grid, spatial_grid_props,
         line_props = line_props, ndens_strat = ndens_strat,
         particle_mass_in_grams = particle_mass_in_grams,
         obs_freq_Hz = _obs_freq_Hz_view,
-        vx = vx, vy = vy, vz = vz,
-        vel_to_cm_per_s_factor = vel_to_cm_per_s_factor,
         using_precalculated_doppler = using_precalculated_doppler,
-        precomputed_doppler_parameter_grid = precomputed_doppler_parameter_grid,
-        ndens_grid = ndens_grid,
-        ndens_to_cc_factor = ndens_to_cc_factor,
-        kinetic_T_grid = kinetic_T.ndview,
-        kinetic_T_to_K_factor = kinetic_T_to_K_factor,
+        grid_data = grid_data,
+        unit_conversions = unit_conversions,
         partition_func = partition_func,
         out = out)
 
@@ -559,15 +638,9 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                            object line_props, object ndens_strat,
                            double particle_mass_in_grams,
                            double[::1] obs_freq_Hz,
-                           double[:,:,::1] vx, double[:,:,::1] vy,
-                           double[:,:,::1] vz,
-                           double vel_to_cm_per_s_factor,
                            bint using_precalculated_doppler,
-                           const double[:,:,:] precomputed_doppler_parameter_grid,
-                           double[:,:,::1] ndens_grid,
-                           double ndens_to_cc_factor,
-                           double[:,:,::1] kinetic_T_grid,
-                           double kinetic_T_to_K_factor,
+                           GridData grid_data,
+                           UnitConversions unit_conversions,
                            object partition_func,
                            object out):
     # this function sure has a lot of arguments...
@@ -603,7 +676,6 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
     cdef double[:,::1] out_view = out
 
     # declaring types used within the (nested) loop:
-    cdef long i0, i1, i2
     cdef const double[::1] cur_uvec_view
     cdef long[:,:] idx3D_view
     cdef const double[::1] tmp_dz_view
@@ -614,20 +686,19 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
         (k, np.empty(shape = (max_num,), dtype = 'f8'))
         for k in ['dz_cm', 'vlos', 'ndens', 'kinetic_T', 'doppler_parameter'])
 
-    cdef double[::1] dz_cm = npy_buffers['dz_cm']
-    cdef double[::1] vlos = npy_buffers['vlos']
-    cdef double[::1] ndens = npy_buffers['ndens']
-    cdef double[::1] kinetic_T = npy_buffers['kinetic_T']
-    cdef double[::1] cur_doppler_parameter_b = npy_buffers['doppler_parameter']
-
     cdef RayAlignedProps ray_data = get_RayAlignedProps(
         num_segments = 0,
-        dz = dz_cm, vLOS = vlos, ndens = ndens, kinetic_T = kinetic_T,
-        precomputed_doppler_parameter_b = cur_doppler_parameter_b
+        dz = npy_buffers['dz_cm'], vLOS = npy_buffers['vlos'],
+        ndens = npy_buffers['ndens'], kinetic_T = npy_buffers['kinetic_T'],
+        precomputed_doppler_parameter_b = npy_buffers['doppler_parameter']
     )
 
     cdef double cm_per_length_unit = spatial_grid_props.cm_per_length_unit
 
+    cdef RayDataExtractor ray_data_extractor = RayDataExtractor()
+    ray_data_extractor.grid_data = grid_data
+    ray_data_extractor.unit_conversions = unit_conversions
+    ray_data_extractor.spatial_grid_props = spatial_grid_props
 
     cdef C_LineProps c_line_props = get_LineProps_struct(line_props)
 
@@ -639,79 +710,33 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
     # - we can preallocate buffers for storing the data along rays. Then we can
     #   avoid using numpy's fancy-indexing and directly index ourselves
 
-    try:
-        # loop over the rays
-        for i in range(nrays):
-            ray_start = full_ray_start[i,:]
-            ray_uvec = full_ray_uvec[i,:]
+    for i in range(nrays):
+        ray_start = full_ray_start[i,:]
+        ray_uvec = full_ray_uvec[i,:]
 
-            tmp_idx, tmp_dz = traverse_grid(line_uvec = ray_uvec,
-                                            line_start = ray_start,
-                                            spatial_props = spatial_grid_props)
-            idx3D_view = tmp_idx
-            tmp_dz_view = tmp_dz
+        ray_data_extractor.get_ray_data(&ray_data,
+                                        full_ray_start[i,:],
+                                        full_ray_uvec[i,:])
 
-            ray_data.num_segments = tmp_dz_view.shape[0]
-
-            # read the quantities along the ray into the 1d buffer
-            # -> explicitly access the buffers through the memoryviews rather
-            #    than the pointers stored in the ray_data struct, because the
-            #    pointers are all `const double*`, to denote that they are
-            #    read-only to the actual ray-tracing functions
-            cur_uvec_view = ray_uvec
-            with cython.boundscheck(False), cython.wraparound(False):
-                for j in range(ray_data.num_segments):
-                    # convert dz to cm to avoid problems later
-                    dz_cm[j] = tmp_dz_view[j] * cm_per_length_unit
-
-                    # extract the jth element along the ray
-                    i0 = idx3D_view[0,j]
-                    i1 = idx3D_view[1,j]
-                    i2 = idx3D_view[2,j]
-
-                    # should probably confirm correctness of velocity sign
-                    vlos[j] = (
-                        cur_uvec_view[0] * vx[i0,i1,i2] +
-                        cur_uvec_view[1] * vy[i0,i1,i2] +
-                        cur_uvec_view[2] * vz[i0,i1,i2]
-                    ) * vel_to_cm_per_s_factor
-
-                    ndens[j] = (ndens_grid[i0,i1,i2] * ndens_to_cc_factor)
-                    kinetic_T[j] = (kinetic_T_grid[i0,i1,i2] *
-                                    kinetic_T_to_K_factor)
-                    cur_doppler_parameter_b[j] = (
-                        precomputed_doppler_parameter_grid[i0,i1,i2]
+        if not using_precalculated_doppler:
+            for j in range(ray_data.num_segments):
+                ray_data.precomputed_doppler_parameter_b[j] = (
+                    doppler_parameter_b_from_temperature(
+                        ray_data.kinetic_T[j], 1.0 / particle_mass_in_grams
                     )
-
-            if not using_precalculated_doppler:
-                for j in range(ray_data.num_segments):
-                    cur_doppler_parameter_b[j] = (
-                        doppler_parameter_b_from_temperature(
-                            kinetic_T[j], 1.0 / particle_mass_in_grams
-                        )
-                    )
-
-            if legacy_optically_thin_spin_flip:
-                optically_thin_21cm_ray_spectrum_impl(
-                    c_line_props, nfreq, &obs_freq_Hz[0],
-                    ray_data, out = &out_view[i,0])
-            else:
-                generate_noscatter_spectrum_impl(
-                    c_line_props, nfreq, &obs_freq_Hz[0],
-                    ray_data, partition_fn_pack = partition_fn_pack,
-                    out_integrated_source = &out_view[i,0],
-                    out_tau = &out_view[i, nfreq]
                 )
-    except:
-        print(
-            "There was a problem!",
-            f'line_uvec = {np.array2string(ray_uvec, floatmode = "unique")}',
-            f'line_start = {np.array2string(ray_start, floatmode = "unique")}',
-            f'spatial_grid_props = {spatial_grid_props!r}',
-            sep = '\n  '
-        )
-        raise
 
+        if legacy_optically_thin_spin_flip:
+            optically_thin_21cm_ray_spectrum_impl(
+                c_line_props, nfreq, &obs_freq_Hz[0],
+                ray_data, out = &out_view[i,0])
+        else:
+            generate_noscatter_spectrum_impl(
+                c_line_props, nfreq, &obs_freq_Hz[0],
+                ray_data, partition_fn_pack = partition_fn_pack,
+                out_integrated_source = &out_view[i,0],
+                out_tau = &out_view[i, nfreq]
+            )
 
     if legacy_optically_thin_spin_flip:
         return out
@@ -746,11 +771,11 @@ class NdensRatio:
 
 def _generate_noscatter_spectrum_cy(object line_props,
                                     const double[::1] obs_freq,
-                                    const double[::1] vLOS,
-                                    const double[::1] ndens,
-                                    const double[::1] kinetic_T,
-                                    const double[::1] doppler_parameter_b,
-                                    const double[::1] dz,
+                                    double[::1] vLOS,
+                                    double[::1] ndens,
+                                    double[::1] kinetic_T,
+                                    double[::1] doppler_parameter_b,
+                                    double[::1] dz,
                                     object level_pops_arg,
                                     double[::1] out_integrated_source,
                                     double[::1] out_tau):
