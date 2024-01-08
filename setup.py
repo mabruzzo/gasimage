@@ -29,7 +29,8 @@ ext_modules = [
               **extra_kwargs
     ),
     Extension('gasimage._generate_spec_cy',
-              ['gasimage/_generate_spec_cy.pyx'],
+              sources = ['gasimage/_generate_spec_cy.pyx',
+                         'gasimage/cpp/generate_ray_spectra.cpp'],
               define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
               language = 'c++',
               extra_compile_args = ['--std=c++17'],

@@ -44,3 +44,26 @@ private: // attributes
   long length_;
 
 };
+
+/// Compute the spectrum along each specified ray!
+///
+/// @param ray_aligned_prop_buffer struct of preallocated buffers that are used
+///     internally to temporarily store data along each ray
+/// @param ray_data_extractor This should be a RayDataExtractor python
+///     extension type instance that was casted to a void pointer
+///
+/// @returns 0 on success
+///
+/// @note
+/// make partition_fn_pack into a std::optional
+int generate_ray_spectra(int legacy_optically_thin_spin_flip,
+                         const MathVecCollecView ray_start_list,
+                         const MathVecCollecView ray_uvec_list,
+                         double particle_mass_in_grams,
+                         LinInterpPartitionFn partition_fn_pack,
+                         long nfreq, const double* obs_freq_Hz,
+                         int using_precalculated_doppler,
+                         RayAlignedProps& ray_aligned_prop_buffer,
+                         void* ray_data_extractor,
+                         double* out_integrated_source,
+                         double* out_tau) noexcept;

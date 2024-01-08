@@ -503,10 +503,19 @@ cdef class RayDataExtractor:
         out.ray_uvec_buf_npy = np.empty(shape = (3,), dtype = 'f8')
         return out
 
-cdef void get_ray_data_helper(RayAlignedProps* ray_data,
+# Based on the ray_start and ray_uvec, and ray_data_extractor arguments,
+# compute the data along the ray and store the result in ray_data (which should
+# be preallocated - each array in it should be long enough for the longest
+# possible ray)
+#
+# We use the "public" keyword so that an entry is created in a header file that
+# cython will generate (this lets us call the function from c++ source files
+# compiled together with this source file)
+cdef public void get_ray_data(RayAlignedProps* ray_data,
                               const double * ray_start,
                               const double * ray_uvec,
-                              RayDataExtractor obj):
+                              void * ray_data_extractor):
+    cdef RayDataExtractor obj = <RayDataExtractor>ray_data_extractor
 
     cdef Py_ssize_t i
     for i in range(3):
@@ -552,16 +561,7 @@ cdef void get_ray_data_helper(RayAlignedProps* ray_data,
             ray_data.precomputed_doppler_parameter_b[j] = (
                 obj.grid_data.precomputed_doppler_parameter[i0,i1,i2])
 
-# Based on the ray_start and ray_uvec, and ray_data_extractor arguments,
-# compute the data along the ray and store the result in ray_data (which should
-# be preallocated - each array in it should be long enough for the longest
-# possible ray)
-cdef void get_ray_data(RayAlignedProps* ray_data,
-                       const double * ray_start,
-                       const double * ray_uvec,
-                       void * ray_data_extractor):
-    get_ray_data_helper(ray_data, ray_start, ray_uvec,
-                        <RayDataExtractor>ray_data_extractor)
+
 
 
 cdef extern from "cpp/generate_ray_spectra.hpp":
@@ -570,6 +570,18 @@ cdef extern from "cpp/generate_ray_spectra.hpp":
         MathVecCollecView(const double*, long)
         const double* operator[](long i) const
         long length() const
+
+    int generate_ray_spectra(int legacy_optically_thin_spin_flip,
+                             const MathVecCollecView ray_start_list,
+                             const MathVecCollecView ray_uvec_list,
+                             double particle_mass_in_grams,
+                             LinInterpPartitionFn partition_fn_pack,
+                             long nfreq, const double* obs_freq_Hz,
+                             int using_precalculated_doppler,
+                             RayAlignedProps& ray_aligned_prop_buffer,
+                             void* ray_data_extractor,
+                             double* out_integrated_source,
+                             double* out_tau)
 
 cdef MathVecCollecView build_MathVecCollecView(object npy_vec_collec) except *:
     dtype = np.dtype('=f8')
@@ -680,7 +692,7 @@ def generate_ray_spectrum(grid, spatial_grid_props,
         grid_data = grid_data,
         unit_conversions = unit_conversions,
         partition_func = partition_func,
-        out = out)
+        out_integrated_source = out)
 
 
 def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
@@ -693,7 +705,7 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
                            GridData grid_data,
                            UnitConversions unit_conversions,
                            object partition_func,
-                           object out):
+                           object out_integrated_source):
     # this function sure has a lot of arguments...
     #cdef double inv_particle_mass_cgs = 1.0 / particle_mass_in_grams
 
@@ -716,15 +728,18 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
     if legacy_optically_thin_spin_flip:
         out_shape = (nrays, nfreq)
     else:
-        out_shape = (nrays,  2*nfreq)
+        out_shape = (nrays, nfreq)
 
-    if out is None:
-        out = np.empty(out_shape, dtype = 'f8')
+    if out_integrated_source is None:
+        out_integrated_source = np.empty(out_shape, dtype = 'f8')
     else:
-        assert out.shape == out_shape
-        assert out.dtype == np.dtype('f8')
+        assert out_integrated_source.shape == out_shape
+        assert out_integrated_source.dtype == np.dtype('f8')
 
-    cdef double[:,::1] out_view = out
+    out_tau = np.empty(out_shape, dtype = 'f8')
+
+    cdef double[:,::1] out_integrated_source_view = out_integrated_source
+    cdef double[:,::1] out_tau_view = out_tau
 
     # allocate 1d buffers used to hold the various quantities along the ray
     cdef long max_num = max_num_intersections(spatial_grid_props.grid_shape)
@@ -751,6 +766,22 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
     cdef MathVecCollecView ray_uvec_collection = build_MathVecCollecView(
         full_ray_uvec)
 
+    """
+    cdef int errcode = generate_ray_spectra(
+        legacy_optically_thin_spin_flip = legacy_optically_thin_spin_flip,
+        ray_start_list = ray_start_collection,
+        ray_uvec_list = ray_uvec_collection,
+        particle_mass_in_grams = particle_mass_in_grams,
+        partition_fn_pack = partition_fn_pack,
+        nfreq = nfreq, obs_freq_Hz = &obs_freq_Hz[0],
+        using_precalculated_doppler = using_precalculated_doppler,
+        ray_aligned_prop_buffer = ray_data,
+        ray_data_extractor = <void*>ray_data_extractor,
+        out_integrated_source = &out_integrated_source_view[0,0],
+        out_tau = &out_tau_view[0,0])
+    assert errcode == 0
+    """
+
     for i in range(nrays):
 
         get_ray_data(&ray_data, ray_start_collection[i],
@@ -767,20 +798,22 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
         if legacy_optically_thin_spin_flip:
             optically_thin_21cm_ray_spectrum_impl(
                 c_line_props, nfreq, &obs_freq_Hz[0],
-                ray_data, out = &out_view[i,0])
+                ray_data, out = &out_integrated_source_view[i,0])
         else:
             generate_noscatter_spectrum_impl(
                 c_line_props, nfreq, &obs_freq_Hz[0],
                 ray_data, partition_fn_pack = partition_fn_pack,
-                out_integrated_source = &out_view[i,0],
-                out_tau = &out_view[i, nfreq]
+                out_integrated_source = &out_integrated_source_view[i,0],
+                out_tau = &out_tau_view[i, 0]
             )
 
+
     if legacy_optically_thin_spin_flip:
-        return out
+        return out_integrated_source
     else:
         out_l = [
-            {'integrated_source' : out[i,:nfreq], 'total_tau' : out[i,nfreq:]}
+            {'integrated_source' : out_integrated_source[i,:],
+             'total_tau' : out_tau[i,:]}
             for i in range(nrays)
         ]
         return out_l

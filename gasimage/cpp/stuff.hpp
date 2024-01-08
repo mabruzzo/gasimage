@@ -250,7 +250,7 @@ inline Ndens_And_Ratio ndens_and_ratio_from_partition(
 
 } // anonymous namespace
 
-void optically_thin_21cm_ray_spectrum_impl(const C_LineProps line_props,
+inline void optically_thin_21cm_ray_spectrum_impl(const C_LineProps line_props,
                                            const long nfreq,
                                            const double* obs_freq,
                                            const RayAlignedProps ray_aligned_data,
@@ -346,7 +346,7 @@ struct IntegralStructNoScatterRT {
   double* segStart_expNegTau;
 };
 
-IntegralStructNoScatterRT prep_IntegralStructNoScatterRT(
+inline IntegralStructNoScatterRT prep_IntegralStructNoScatterRT(
   long nfreq, double* total_tau, double* integrated_source
 )
 {
@@ -432,7 +432,7 @@ IntegralStructNoScatterRT prep_IntegralStructNoScatterRT(
  * This function should be repeatedly called moving progressively further from
  * the observer
  */
-void update_IntegralStructNoScatterRT(const IntegralStructNoScatterRT& obj,
+inline void update_IntegralStructNoScatterRT(const IntegralStructNoScatterRT& obj,
                                       const double* absorption_coef,
                                       double source_function, double dz)
 {
@@ -470,7 +470,7 @@ void update_IntegralStructNoScatterRT(const IntegralStructNoScatterRT& obj,
   }
 }
 
-void clean_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj)
+inline void clean_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj)
 {
   if ((obj.nfreq > 0) && (obj.segStart_expNegTau != nullptr)) {
       delete[] obj.segStart_expNegTau;
@@ -478,7 +478,7 @@ void clean_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj)
 }
 
 
-int generate_noscatter_spectrum_impl(C_LineProps line_props,
+inline int generate_noscatter_spectrum_impl(C_LineProps line_props,
                                      const long nfreq,
                                      const double* obs_freq,
                                      const RayAlignedProps ray_aligned_data,
