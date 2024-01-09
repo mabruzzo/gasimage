@@ -574,6 +574,7 @@ cdef extern from "cpp/generate_ray_spectra.hpp":
     int generate_ray_spectra(int legacy_optically_thin_spin_flip,
                              const MathVecCollecView ray_start_list,
                              const MathVecCollecView ray_uvec_list,
+                             C_LineProps line_props,
                              double particle_mass_in_grams,
                              LinInterpPartitionFn partition_fn_pack,
                              long nfreq, const double* obs_freq_Hz,
@@ -766,11 +767,11 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
     cdef MathVecCollecView ray_uvec_collection = build_MathVecCollecView(
         full_ray_uvec)
 
-    """
     cdef int errcode = generate_ray_spectra(
         legacy_optically_thin_spin_flip = legacy_optically_thin_spin_flip,
         ray_start_list = ray_start_collection,
         ray_uvec_list = ray_uvec_collection,
+        line_props = c_line_props,
         particle_mass_in_grams = particle_mass_in_grams,
         partition_fn_pack = partition_fn_pack,
         nfreq = nfreq, obs_freq_Hz = &obs_freq_Hz[0],
@@ -780,33 +781,6 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
         out_integrated_source = &out_integrated_source_view[0,0],
         out_tau = &out_tau_view[0,0])
     assert errcode == 0
-    """
-
-    for i in range(nrays):
-
-        get_ray_data(&ray_data, ray_start_collection[i],
-                     ray_uvec_collection[i], <void*>ray_data_extractor)
-
-        if not using_precalculated_doppler:
-            for j in range(ray_data.num_segments):
-                ray_data.precomputed_doppler_parameter_b[j] = (
-                    doppler_parameter_b_from_temperature(
-                        ray_data.kinetic_T[j], 1.0 / particle_mass_in_grams
-                    )
-                )
-
-        if legacy_optically_thin_spin_flip:
-            optically_thin_21cm_ray_spectrum_impl(
-                c_line_props, nfreq, &obs_freq_Hz[0],
-                ray_data, out = &out_integrated_source_view[i,0])
-        else:
-            generate_noscatter_spectrum_impl(
-                c_line_props, nfreq, &obs_freq_Hz[0],
-                ray_data, partition_fn_pack = partition_fn_pack,
-                out_integrated_source = &out_integrated_source_view[i,0],
-                out_tau = &out_tau_view[i, 0]
-            )
-
 
     if legacy_optically_thin_spin_flip:
         return out_integrated_source
