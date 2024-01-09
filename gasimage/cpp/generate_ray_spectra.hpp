@@ -1,6 +1,7 @@
 #pragma once
 
 #include "err.hpp"
+#include <optional>
 
 #define DEBUG_INDICES 1
 
@@ -52,7 +53,7 @@ struct ArgPack {
   MathVecCollecView ray_uvec_list;
   C_LineProps line_props;
   double inv_particle_mass_cgs;
-  LinInterpPartitionFn partition_fn_pack;
+  const std::optional<LinInterpPartitionFn>& partition_fn_pack;
   long nfreq;
   const double* obs_freq_Hz;
   void* ray_data_extractor;
@@ -81,6 +82,11 @@ template<bool legacy_optically_thin_spin_flip,
 int generate_ray_spectra_(const ArgPack pack,
                           RayAlignedProps ray_data_buffer) noexcept
 {
+  if ((! legacy_optically_thin_spin_flip) && (! bool(pack.partition_fn_pack))) {
+    ERROR("an empty partition_fn_pack was specified. A valid selection is "
+          "currently required for non-optically thin rt");
+  }
+
   const long nrays = pack.ray_start_list.length();
   if (nrays != pack.ray_uvec_list.length()) {
     ERROR("There is a mismatch in the lists of rays.");
@@ -116,7 +122,7 @@ int generate_ray_spectra_(const ArgPack pack,
     } else {
       generate_noscatter_spectrum_impl
         (pack.line_props, pack.nfreq, pack.obs_freq_Hz, ray_data_buffer,
-         pack.partition_fn_pack,
+         *pack.partition_fn_pack,
          pack.out_integrated_source + i * pack.nfreq,
          pack.out_tau + i * pack.nfreq);
     }
@@ -136,18 +142,19 @@ int generate_ray_spectra_(const ArgPack pack,
 ///
 /// @note
 /// make partition_fn_pack into a std::optional
-inline int generate_ray_spectra(int legacy_optically_thin_spin_flip,
-                                const MathVecCollecView ray_start_list,
-                                const MathVecCollecView ray_uvec_list,
-                                C_LineProps line_props,
-                                double particle_mass_in_grams,
-                                LinInterpPartitionFn partition_fn_pack,
-                                long nfreq, const double* obs_freq_Hz,
-                                int using_precalculated_doppler,
-                                RayAlignedProps& ray_aligned_prop_buffer,
-                                void* ray_data_extractor,
-                                double* out_integrated_source,
-                                double* out_tau)
+inline int generate_ray_spectra(
+  int legacy_optically_thin_spin_flip,
+  const MathVecCollecView ray_start_list,
+  const MathVecCollecView ray_uvec_list,
+  C_LineProps line_props,
+  double particle_mass_in_grams,
+  const std::optional<LinInterpPartitionFn>& partition_fn_pack,
+  long nfreq, const double* obs_freq_Hz,
+  int using_precalculated_doppler,
+  RayAlignedProps& ray_aligned_prop_buffer,
+  void* ray_data_extractor,
+  double* out_integrated_source,
+  double* out_tau)
 {
   if ((!legacy_optically_thin_spin_flip) && (out_tau == nullptr)) {
     ERROR("out_tau can only be null when using legacy optically_thin strat");

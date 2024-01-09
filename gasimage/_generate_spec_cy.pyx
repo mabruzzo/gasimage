@@ -4,8 +4,19 @@ import unyt
 cimport numpy as np
 cimport cython
 
-from libc.math cimport exp as exp_f64
-from libc.math cimport sqrt as sqrt_f64
+# in future versions, we can use:
+#from libcpp.optional cimport optional
+
+cdef extern from "<optional>" namespace "std":
+    cdef cppclass optional[T]:
+        optional()
+        optional(optional&) except +
+        optional(T&) except +
+        optional& operator=(optional&)
+        optional& operator=[U](U&)
+
+
+
 
 # CLEANUP ToDo List:
 # -> unify the interface a little more between _generate_ray_spectrum_cy and
@@ -576,7 +587,7 @@ cdef extern from "cpp/generate_ray_spectra.hpp":
                              const MathVecCollecView ray_uvec_list,
                              C_LineProps line_props,
                              double particle_mass_in_grams,
-                             LinInterpPartitionFn partition_fn_pack,
+                             optional[LinInterpPartitionFn] partition_fn_pack,
                              long nfreq, const double* obs_freq_Hz,
                              int using_precalculated_doppler,
                              RayAlignedProps& ray_aligned_prop_buffer,
@@ -716,7 +727,7 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
     else:
         assert ndens_strat == NdensStrategy.IonNDensGrid_LTERatio
 
-    cdef LinInterpPartitionFn partition_fn_pack
+    cdef optional[LinInterpPartitionFn] partition_fn_pack
     if isinstance(partition_func, PyLinInterpPartitionFunc):
         partition_fn_pack = (
             (<PyLinInterpPartitionFunc>partition_func).get_partition_fn_struct()
