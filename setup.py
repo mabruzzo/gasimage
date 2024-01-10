@@ -27,8 +27,8 @@ def _get_cpp_headers(dir_path):
 
 extra_kwargs = {}
 ext_modules = [
-    Extension('gasimage.ray_traversal._ray_intersections_cy',
-              ['gasimage/ray_traversal/_ray_intersections_cy.pyx'],
+    Extension('gasimage.ray_traversal._misc_cy',
+              ['gasimage/ray_traversal/_misc_cy.pyx'],
               define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
               **extra_kwargs
     ),

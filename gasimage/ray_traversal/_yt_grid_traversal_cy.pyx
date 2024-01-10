@@ -220,8 +220,7 @@ cdef int walk_volume(VolumeContainer *vc,
 # from this point and below all of the code was written for this down here is
 # where the totally new code that I've written begins
 
-from ._ray_intersections_cy import max_num_intersections
-from .spatial_grid_props import get_grid_center, get_grid_width
+from ._misc_cy import max_num_intersections, get_grid_center, get_grid_width
 
 def _get_ray_stop(line_uvec, line_start, spatial_props):
     """

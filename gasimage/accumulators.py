@@ -40,7 +40,7 @@ import unyt
 
 from .generate_ray_spectrum import generate_ray_spectrum_legacy
 from ._generate_spec_cy import NdensStrategy, generate_ray_spectrum
-from .ray_traversal.spatial_grid_props import SpatialGridProps
+from .ray_traversal._misc_cy import SpatialGridProps
 from .rt_config import LineProperties, default_spin_flip_props
 
 # define the actual AccumStratT typing stub

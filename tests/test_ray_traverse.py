@@ -3,7 +3,7 @@ import pytest
 import yt
 
 from gasimage.ray_traversal import traverse_grid
-from gasimage.ray_traversal.spatial_grid_props import (
+from gasimage.ray_traversal._misc_cy import (
     SpatialGridProps,
     alt_build_spatial_grid_props
 )
