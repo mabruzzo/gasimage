@@ -44,6 +44,7 @@ import numpy as np
 
 cimport cython
 from libc.math cimport fabs, floor
+from ._misc_cy cimport SpatialGridProps, SpatialGridPropsStruct
 
 #cimport numpy as np
 #ctypedef np.float64_t flt64_t
@@ -60,29 +61,10 @@ cdef extern from *:
 
     flt64_t MY_FMIN(flt64_t a, flt64_t b)
 
-cdef struct VolumeContainer:
-    #-----------------------------------------------------------------------------
-    # Encapsulates a volume container used for volume rendering.
-    #
-    #    n_fields       int              : The number of fields available to the volume renderer.
-    #    data           flt64_t**   : The data within the volume container.
-    #    mask           np.uint8_t*      : The mask of the volume container. It has dimensions one fewer in each direction than data.
-    #    left_edge      flt64_t[3]  : The left edge of the volume container's bounding box.
-    #    right_edge     flt64_t[3]  : The right edge of the volume container's bounding box.
-    #    flt64_t   dds[3]           : The delta dimensions, such that dds[0] = ddx, dds[1] = ddy, dds[2] = ddz.
-    #    flt64_t   idds[3]          : The inverse delta dimensions. Same as dds pattern, but the inverse. i.e. idds[0] = inv_ddx.
-    #    dims           int[3]           : The dimensions of the volume container. dims[0] = x, dims[1] = y, dims[2] = z.
-    #-----------------------------------------------------------------------------
-    flt64_t left_edge[3]
-    flt64_t right_edge[3]
-    flt64_t dds[3]
-    flt64_t idds[3]
-    int dims[3]
-
 #-----------------------------------------------------------------------------
-# walk_volume(VolumeContainer *vc,  flt64_t v_pos[3], flt64_t v_dir[3], sampler_function *sample,
+# walk_volume(SpatialGridPropsStruct *vc,  flt64_t v_pos[3], flt64_t v_dir[3], sampler_function *sample,
 #             void *data, flt64_t *return_t = NULL, flt64_t max_t = 1.0)
-#    vc        VolumeContainer*  : Pointer to the volume container to be traversed.
+#    vc        SpatialGridPropsStruct*  : Pointer to the volume container to be traversed.
 #    v_pos     flt64_t[3]   : The x,y,z coordinates of the ray's origin.
 #    v_dir     flt64_t[3]   : The x,y,z coordinates of the ray's direction.
 #    sample    sampler_function* : Pointer to the sampler function to be used.
@@ -99,7 +81,7 @@ cdef struct VolumeContainer:
 # See: https://www.researchgate.net/publication/2611491_A_Fast_Voxel_Traversal_Algorithm_for_Ray_Tracing
 # Returns: The number of voxels hit during the traversal phase. If the traversal phase is not reached, returns 0.
 #-----------------------------------------------------------------------------
-cdef int walk_volume(VolumeContainer *vc,
+cdef int walk_volume(SpatialGridPropsStruct *vc,
                      flt64_t* v_pos,
                      flt64_t* v_dir,
                      void (*sample)(flt64_t enter_t, flt64_t exit_t, int index[3], void *data),
@@ -140,13 +122,13 @@ cdef int walk_volume(VolumeContainer *vc,
             tl = (vc.right_edge[i] - v_pos[i])*iv_dir[i]
         temp_x = (v_pos[x] + tl*v_dir[x])
         temp_y = (v_pos[y] + tl*v_dir[y])
-        if fabs(temp_x - vc.left_edge[x]) < 1e-10*vc.dds[x]:
+        if fabs(temp_x - vc.left_edge[x]) < 1e-10*vc.cell_width[x]:
             temp_x = vc.left_edge[x]
-        elif fabs(temp_x - vc.right_edge[x]) < 1e-10*vc.dds[x]:
+        elif fabs(temp_x - vc.right_edge[x]) < 1e-10*vc.cell_width[x]:
             temp_x = vc.right_edge[x]
-        if fabs(temp_y - vc.left_edge[y]) < 1e-10*vc.dds[y]:
+        if fabs(temp_y - vc.left_edge[y]) < 1e-10*vc.cell_width[y]:
             temp_y = vc.left_edge[y]
-        elif fabs(temp_y - vc.right_edge[y]) < 1e-10*vc.dds[y]:
+        elif fabs(temp_y - vc.right_edge[y]) < 1e-10*vc.cell_width[y]:
             temp_y = vc.right_edge[y]
         if vc.left_edge[x] <= temp_x and temp_x <= vc.right_edge[x] and \
            vc.left_edge[y] <= temp_y and temp_y <= vc.right_edge[y] and \
@@ -159,35 +141,35 @@ cdef int walk_volume(VolumeContainer *vc,
         # Two things have to be set inside this loop.
         # cur_ind[i], the current index of the grid cell the ray is in
         # tmax[i], the 't' until it crosses out of the grid cell
-        tdelta[i] = step[i] * iv_dir[i] * vc.dds[i]
+        tdelta[i] = step[i] * iv_dir[i] * vc.cell_width[i]
         if i == direction and step[i] > 0:
             # Intersection with the left face in this direction
             cur_ind[i] = 0
         elif i == direction and step[i] < 0:
             # Intersection with the right face in this direction
-            cur_ind[i] = vc.dims[i] - 1
+            cur_ind[i] = vc.grid_shape[i] - 1
         else:
             # We are somewhere in the middle of the face
             temp_x = intersect_t * v_dir[i] + v_pos[i] # current position
-            temp_y = ((temp_x - vc.left_edge[i])*vc.idds[i])
+            temp_y = ((temp_x - vc.left_edge[i])*vc.inv_cell_width[i])
             # There are some really tough cases where we just within a couple
             # least significant places of the edge, and this helps prevent
             # killing the calculation through a segfault in those cases.
             if -1 < temp_y < 0 and step[i] > 0:
                 temp_y = 0.0
-            elif vc.dims[i] - 1 < temp_y < vc.dims[i] and step[i] < 0:
-                temp_y = vc.dims[i] - 1
+            elif vc.grid_shape[i] - 1 < temp_y < vc.grid_shape[i] and step[i] < 0:
+                temp_y = vc.grid_shape[i] - 1
             cur_ind[i] =  <int> (floor(temp_y))
         if step[i] > 0:
-            temp_y = (cur_ind[i] + 1) * vc.dds[i] + vc.left_edge[i]
+            temp_y = (cur_ind[i] + 1) * vc.cell_width[i] + vc.left_edge[i]
         elif step[i] < 0:
-            temp_y = cur_ind[i] * vc.dds[i] + vc.left_edge[i]
+            temp_y = cur_ind[i] * vc.cell_width[i] + vc.left_edge[i]
         tmax[i] = (temp_y - v_pos[i]) * iv_dir[i]
         if step[i] == 0:
             tmax[i] = 1e60
     # We have to jumpstart our calculation
     for i in range(3):
-        if cur_ind[i] == vc.dims[i] and step[i] >= 0:
+        if cur_ind[i] == vc.grid_shape[i] and step[i] >= 0:
             return 0
         if cur_ind[i] == -1 and step[i] <= -1:
             return 0
@@ -210,7 +192,7 @@ cdef int walk_volume(VolumeContainer *vc,
         cur_ind[i] += step[i]
         enter_t = tmax[i]
         tmax[i] += tdelta[i]
-        if cur_ind[i] < 0 or cur_ind[i] >= vc.dims[i] or enter_t >= max_t:
+        if cur_ind[i] < 0 or cur_ind[i] >= vc.grid_shape[i] or enter_t >= max_t:
             break
     if return_t != NULL: return_t[0] = exit_t
     return hit
@@ -222,7 +204,7 @@ cdef int walk_volume(VolumeContainer *vc,
 
 from ._misc_cy import max_num_intersections, get_grid_center, get_grid_width
 
-def _get_ray_stop(line_uvec, line_start, spatial_props):
+def _get_ray_stop(object line_uvec, object line_start, SpatialGridProps spatial_props):
     """
     this is a helper function. The whole point here is to come up with a
     ray-stop at a distance far enough away that we can be sure that it is 
@@ -262,7 +244,8 @@ cdef void sample_ray(flt64_t enter_t,flt64_t exit_t, int index[3], void *data):
     ptr.cell_count += 1
 
 
-def traverse_grid(line_uvec, line_start, spatial_props):
+def traverse_grid(object line_uvec, object line_start,
+                  SpatialGridProps spatial_props):
     """
     Computes the grid indices that the ray intersects and computes
     the distance of the ray in each cell.
@@ -306,19 +289,9 @@ def traverse_grid(line_uvec, line_start, spatial_props):
     ray_uvec = line_uvec.astype(np.float64, copy = False, order = 'C')
     ray_start = line_start.astype(np.float64, copy = False, order = 'C')
 
-    cdef VolumeContainer vc
-    for i in range(3):
-        vc.left_edge[i]  = spatial_props.left_edge[i]
-        vc.right_edge[i] = spatial_props.right_edge[i]
-        vc.dds[i]        = spatial_props.cell_width[i]
-        vc.idds[i]       = 1.0/spatial_props.cell_width[i]
-        vc.dims[i]       = spatial_props.grid_shape[i]
+    cdef SpatialGridPropsStruct vc =spatial_props.pack
 
     # we need to come up with an end point on the other side of the grid
-    #intersect_dists = ray_box_intersections(ray_start, ray_uvec,
-    #                                        left_edge = grid_left_edge,
-    #                                        right_edge = grid_right_edge)
-
     # intentionally overshoot the back edge of the grid!
     ray_stop = _get_ray_stop(line_uvec, line_start, spatial_props)
 

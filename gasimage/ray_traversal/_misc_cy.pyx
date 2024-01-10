@@ -280,7 +280,27 @@ def _inspect_edge_args(grid_left_edge, grid_right_edge, allow_unyt = False):
         raise ValueError("each element in grid_right_edge should exceed the "
                          "corresponding element in grid_left_edge")
 
-class SpatialGridProps:
+
+
+cdef assign_spatial_props_vals(SpatialGridPropsStruct* pack,
+                               double cm_per_length_unit,
+                               object grid_shape,
+                               object left_edge,
+                               object right_edge,
+                               object cell_width):
+    pack.cm_per_length_unit = cm_per_length_unit
+    cdef Py_ssize_t i
+    for i in range(3):
+        pack.grid_shape[i] = grid_shape[i]
+        pack.left_edge[i] = left_edge[i]
+        pack.right_edge[i] = right_edge[i]
+        pack.cell_width[i] = cell_width[i]
+
+        pack.inv_cell_width[i] = 1.0 / cell_width[i]
+    
+
+
+cdef class SpatialGridProps:
     """
     This collects spatial properties of the current block (or grid) of the
     dataset
@@ -291,11 +311,62 @@ class SpatialGridProps:
     in adiabatic simulations. It's unclear whether that functionality still
     works properly (it definitely hasn't been tested in all contexts).
     """
-    cm_per_length_unit : float
-    grid_shape: np.ndarray
-    left_edge: np.ndarray
-    right_edge: np.ndarray
-    cell_width: np.ndarray
+
+    @property
+    def cm_per_length_unit(self):
+        return self.pack.cm_per_length_unit
+
+    @property
+    def grid_shape(self):
+        return np.array(
+            [self.pack.grid_shape[0], self.pack.grid_shape[1],
+             self.pack.grid_shape[2]]
+        )
+
+    @property
+    def left_edge(self):
+        return np.array(
+            [self.pack.left_edge[0], self.pack.left_edge[1],
+             self.pack.left_edge[2]]
+        )
+
+    @property
+    def right_edge(self):
+        return np.array(
+            [self.pack.right_edge[0], self.pack.right_edge[1],
+             self.pack.right_edge[2]]
+        )
+
+    @property
+    def cell_width(self):
+        return np.array(
+            [self.pack.cell_width[0], self.pack.cell_width[1],
+             self.pack.cell_width[2]]
+        )
+
+    @cell_width.setter
+    def cell_width(self, value):
+        assert np.ndim(value) == 1 and len(value) == 3
+        for i in range(3):
+            self.pack.cell_width[i] = value[i]
+            self.pack.inv_cell_width[i] = 1.0 / value[i]
+
+    def __getstate__(self):
+        out = {}
+        for attr in ['cm_per_length_unit','grid_shape',
+                     'left_edge', 'right_edge', 'cell_width']:
+            out[attr] = getattr(self, attr)
+        return out
+
+    def __setstate__(self, state):
+        assign_spatial_props_vals(
+            pack = &(self.pack),
+            cm_per_length_unit = state['cm_per_length_unit'],
+            grid_shape = state['my_grid_shape'],
+            left_edge = state['my_left_edge'],
+            right_edge = state['my_right_edge'],
+            cell_width = state['my_cell_width']
+        )
 
     def __init__(self, *, cm_per_length_unit: float,
                  grid_shape: Union[Tuple[int,int,int], np.ndarray],
@@ -307,24 +378,27 @@ class SpatialGridProps:
             raise ValueError("cm_per_length_unit must be positive & finite")
         elif rescale_factor <= 0 or not np.isfinite(rescale_factor):
             raise ValueError("rescale factor must be positive & finite")
-        self.cm_per_length_unit = cm_per_length_unit
+        cm_per_length_unit = cm_per_length_unit
 
-        # make a copy, so it owns the data
-        self.grid_shape = _coerce_grid_shape(grid_shape).copy(order = 'C')
+        my_grid_shape = _coerce_grid_shape(grid_shape)
 
         _inspect_edge_args(grid_left_edge, grid_right_edge, allow_unyt = False)
         # in each of the following cases, we pass copy = False, since we know
         # that the input array is newly created!
         _kw = dict(order = 'C', dtype = 'f8', casting = 'safe', copy = False)
-        self.left_edge = (grid_left_edge * rescale_factor).astype(**_kw)
-        self.right_edge = (grid_right_edge * rescale_factor).astype(**_kw)
-        self.cell_width = (
-            (self.right_edge - self.left_edge) / grid_shape
+        my_left_edge = (grid_left_edge * rescale_factor).astype(**_kw)
+        my_right_edge = (grid_right_edge * rescale_factor).astype(**_kw)
+        my_cell_width = (
+            (my_right_edge - my_left_edge) / grid_shape
         ).astype(**_kw)
 
-        for attr in ['grid_shape', 'left_edge', 'right_edge', 'cell_width']:
-            getattr(self,attr).flags['WRITEABLE'] = False
-            assert getattr(self,attr).flags['OWNDATA'] == True # sanity check!
+        assign_spatial_props_vals(pack = &(self.pack),
+                                  cm_per_length_unit = cm_per_length_unit,
+                                  grid_shape = my_grid_shape,
+                                  left_edge = my_left_edge,
+                                  right_edge = my_right_edge,
+                                  cell_width = my_cell_width)
+
 
     @classmethod
     def build_from_unyt_arrays(cls, *, cm_per_length_unit: float,
@@ -368,6 +442,8 @@ class SpatialGridProps:
             f"{np.array2string(self.left_edge, floatmode = 'unique')},\n"
             "    grid_right_edge = "
             f"{np.array2string(self.right_edge, floatmode = 'unique')},\n"
+            "    cell_width = "
+            f"{np.array2string(self.cell_width, floatmode = 'unique')},\n"
             ")"
         )
 

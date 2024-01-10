@@ -273,6 +273,7 @@ def full_line_profile_evaluation(obs_freq, doppler_parameter_b,
 
 
 from .ray_traversal import traverse_grid, max_num_intersections
+from .ray_traversal._misc_cy cimport SpatialGridProps
 from .rt_config import default_spin_flip_props
 from .utils.misc import check_consistent_arg_dims, _has_consistent_dims
 
@@ -426,7 +427,7 @@ cdef struct UnitConversions:
 cdef class RayDataExtractor:
     cdef GridData grid_data
     cdef UnitConversions unit_conversions
-    cdef object spatial_grid_props
+    cdef SpatialGridProps spatial_grid_props
 
     # these are buffers that are reused. Problems could arise with these if we
     # supported multithreading...
@@ -436,7 +437,7 @@ cdef class RayDataExtractor:
     @staticmethod
     cdef RayDataExtractor create(GridData grid_data,
                                  UnitConversions unit_conversions,
-                                 object spatial_grid_props):
+                                 SpatialGridProps spatial_grid_props):
         out = RayDataExtractor()
         out.grid_data = grid_data
         out.unit_conversions = unit_conversions
