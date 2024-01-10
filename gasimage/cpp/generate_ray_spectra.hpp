@@ -78,7 +78,8 @@ extern "C" void get_ray_data(struct RayAlignedProps *, double const *,
                              double const *, void *);
 
 template<bool legacy_optically_thin_spin_flip,
-         bool using_precalculated_doppler>
+         bool using_precalculated_doppler,
+         NdensStrat ndens_strat>
 int generate_ray_spectra_(const ArgPack pack,
                           RayAlignedProps ray_data_buffer) noexcept
 {
@@ -86,6 +87,8 @@ int generate_ray_spectra_(const ArgPack pack,
     ERROR("an empty partition_fn_pack was specified. A valid selection is "
           "currently required for non-optically thin rt");
   }
+
+  NdensFetcher<ndens_strat> ndens_fetcher(pack.partition_fn_pack);
 
   const long nrays = pack.ray_start_list.length();
   if (nrays != pack.ray_uvec_list.length()) {
@@ -105,24 +108,19 @@ int generate_ray_spectra_(const ArgPack pack,
     get_ray_data(&ray_data_buffer, ray_start, ray_uvec,
                  pack.ray_data_extractor);
 
-    if (!using_precalculated_doppler) {
-      // todo: move the following functionality into the actual rt functions
-      for(int j = 0; j < ray_data_buffer.num_segments; j++) {
-        ray_data_buffer.precomputed_doppler_parameter_b[j] =
-          doppler_parameter_b_from_temperature(ray_data_buffer.kinetic_T[j],
-                                               pack.inv_particle_mass_cgs);
-      }
-    }
-
-    if (legacy_optically_thin_spin_flip) {
-      optically_thin_21cm_ray_spectrum_impl
-        (pack.line_props, pack.nfreq, pack.obs_freq_Hz,
-         ray_data_buffer,
+    if constexpr (legacy_optically_thin_spin_flip) {
+      optically_thin_21cm_ray_spectrum_impl<using_precalculated_doppler,
+                                            ndens_strat>
+        (pack.line_props, pack.inv_particle_mass_cgs,
+         pack.nfreq, pack.obs_freq_Hz,
+         ray_data_buffer, ndens_fetcher,
          pack.out_integrated_source + i * pack.nfreq);
-    } else {
-      generate_noscatter_spectrum_impl
-        (pack.line_props, pack.nfreq, pack.obs_freq_Hz, ray_data_buffer,
-         *pack.partition_fn_pack,
+    } else if constexpr (!legacy_optically_thin_spin_flip) {
+      generate_noscatter_spectrum_impl<using_precalculated_doppler,
+                                       ndens_strat>
+        (pack.line_props, pack.inv_particle_mass_cgs,
+         pack.nfreq, pack.obs_freq_Hz, ray_data_buffer,
+         ndens_fetcher,
          pack.out_integrated_source + i * pack.nfreq,
          pack.out_tau + i * pack.nfreq);
     }
@@ -130,6 +128,32 @@ int generate_ray_spectra_(const ArgPack pack,
   }
   return 0; // no issues
 }
+
+namespace details{
+
+inline void check_args_(int legacy_optically_thin_spin_flip,
+                        int using_precalculated_doppler,
+                        const std::optional<LinInterpPartitionFn>& partition_fn_pack,
+                        double * out_integrated_source,
+                        double * out_tau)
+{
+  if (legacy_optically_thin_spin_flip < 0) {
+    ERROR("legacy_optically_thin_spin_flip must be non-negative");
+  } else if (using_precalculated_doppler < 0) {
+    ERROR("using_precalculated_doppler must be non-negative");
+  } else if ((!legacy_optically_thin_spin_flip) && (out_tau == nullptr)) {
+    ERROR("out_tau can only be null when using legacy optically_thin strat");
+  } else if (out_integrated_source == nullptr) {
+    ERROR("out_integrated_source can't be NULL");
+  } else if ((! legacy_optically_thin_spin_flip) &&
+             (! bool(partition_fn_pack))) {
+    ERROR("an empty partition_fn_pack was specified. A valid selection is "
+          "currently required for non-optically thin rt");
+  }
+
+}
+
+} // namespace details
 
 /// Compute the spectrum along each specified ray!
 ///
@@ -156,13 +180,14 @@ inline int generate_ray_spectra(
   double* out_integrated_source,
   double* out_tau)
 {
-  if ((!legacy_optically_thin_spin_flip) && (out_tau == nullptr)) {
-    ERROR("out_tau can only be null when using legacy optically_thin strat");
-  } else if (out_integrated_source == nullptr) {
-    ERROR("out_integrated_source can't be NULL");
-  } else if (particle_mass_in_grams <= 0){
+  details::check_args_(legacy_optically_thin_spin_flip,
+                       using_precalculated_doppler,
+                       partition_fn_pack,
+                       out_integrated_source, out_tau);
+
+  if (particle_mass_in_grams <= 0){
     ERROR("particle_mass_in_grams must be positive");
-  }
+  } 
 
   ArgPack pack =
     {ray_start_list, ray_uvec_list,
@@ -171,21 +196,71 @@ inline int generate_ray_spectra(
 
   if (legacy_optically_thin_spin_flip) {
     if (using_precalculated_doppler) {
-      return generate_ray_spectra_<true, true>(pack,
-                                               ray_aligned_prop_buffer);
+      return generate_ray_spectra_<true, true,
+                                   NdensStrat::SpecialLegacySpinFlipCase>
+        (pack, ray_aligned_prop_buffer);
     } else {
-      return generate_ray_spectra_<true, false>(pack,
-                                                ray_aligned_prop_buffer);
+      return generate_ray_spectra_<true, false,
+                                   NdensStrat::SpecialLegacySpinFlipCase>
+        (pack, ray_aligned_prop_buffer);
     }
   } else {
     if (using_precalculated_doppler) {
-      return generate_ray_spectra_<false, true>(pack,
-                                                ray_aligned_prop_buffer);
+      return generate_ray_spectra_<false, true,
+                                   NdensStrat::IonNDensGrid_LTERatio>
+        (pack, ray_aligned_prop_buffer);
     } else {
-      return generate_ray_spectra_<false, false>(pack,
-                                                 ray_aligned_prop_buffer);
+      return generate_ray_spectra_<false, false,
+                                   NdensStrat::IonNDensGrid_LTERatio>
+        (pack, ray_aligned_prop_buffer);
     }
   }
 
 
+}
+
+
+
+
+                       
+
+// function that will get called externally to test rt functionality!
+inline int external_single_ray_rt_wrapper
+(int legacy_optically_thin_spin_flip, C_LineProps line_props,
+ const long nfreq, const double* obs_freq,
+ const RayAlignedProps ray_aligned_data,
+ const std::optional<LinInterpPartitionFn>& partition_fn_pack,
+ double* out_integrated_source,
+ double* out_tau)
+{
+  const int using_precalculated_doppler = 1;
+
+  details::check_args_(legacy_optically_thin_spin_flip,
+                       using_precalculated_doppler,
+                       partition_fn_pack,
+                       out_integrated_source, out_tau);
+
+  const double inv_particle_mass_cgs = 0.0; // pick a dummy default value!
+
+  if (legacy_optically_thin_spin_flip) {
+    NdensFetcher<NdensStrat::SpecialLegacySpinFlipCase> ndens_fetcher
+      (partition_fn_pack);
+
+    optically_thin_21cm_ray_spectrum_impl<true,
+                                          NdensStrat::SpecialLegacySpinFlipCase>
+      (line_props, inv_particle_mass_cgs, nfreq, obs_freq, ray_aligned_data,
+       ndens_fetcher,
+       out_integrated_source);
+  } else {
+    NdensFetcher<NdensStrat::IonNDensGrid_LTERatio> ndens_fetcher
+      (partition_fn_pack);
+
+    generate_noscatter_spectrum_impl<true,
+                                     NdensStrat::IonNDensGrid_LTERatio>
+      (line_props, inv_particle_mass_cgs, nfreq, obs_freq, ray_aligned_data,
+       ndens_fetcher,
+       out_integrated_source, out_tau);
+  }
+
+  return 0;
 }

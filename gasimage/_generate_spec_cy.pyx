@@ -91,16 +91,6 @@ cdef extern from "cpp/stuff.hpp":
         double* kinetic_T
         double* precomputed_doppler_parameter_b
 
-    void optically_thin_21cm_ray_spectrum_impl(
-        const C_LineProps line_props, const long nfreq, const double* obs_freq,
-        const RayAlignedProps ray_aligned_data, double* out)
-
-    int generate_noscatter_spectrum_impl(
-        C_LineProps line_props, const long nfreq, const double* obs_freq,
-        const RayAlignedProps ray_aligned_data,
-        const LinInterpPartitionFn partition_fn_pack,
-        double* out_integrated_source, double* out_tau)
-
 cdef C_LineProps get_LineProps_struct(object line_props) except *:
     # this converts the LineProps class into C_LineProps
     cdef C_LineProps out
@@ -280,66 +270,7 @@ def full_line_profile_evaluation(obs_freq, doppler_parameter_b,
     #print(t2-t1)
     return out.T / unyt.Hz
 
-def _generate_opticallythin_spectrum_cy(object line_props,
-                                        const double[::1] obs_freq,
-                                        double[::1] vLOS,
-                                        double[::1] ndens_HI_n1state,
-                                        double[::1] doppler_parameter_b,
-                                        double[::1] dz,
-                                        double[::1] out,
-                                        double[::1] kinetic_T = None):
-    """
-    Compute specific intensity (aka monochromatic intensity) from data measured
-    along the path of a single ray.
 
-    While we only consider the path of a given ray, specific intensity
-    actually describes a continuum of rays with infintesimal differences.
-    Specific intensity is the amount of energy carried by light in frequency
-    range $d\nu$, over time $dt$ along the collection of all rays that pass
-    through a patch of area $dA$ (oriented normal to the given-ray) whose
-    directions subtend a solid angle of $d\Omega$ around the given-ray.
-
-    For computational convenience, a single call to this function will compute
-    the specific intensity at multiple different frequencies.
-
-    The resulting array should be understood to have units of
-    erg/(cm**2 * Hz * s * steradian).
-
-    Parameters
-    ----------
-    line_props : LineProps
-        Encodes details about the line transition
-    obs_freq : ndarray, shape(nfreq,)
-        Array of frequencies to perform radiative transfer at (in Hz).
-    vLOS : ndarray, shape(ngas,)
-        Velocities of the gas in cells along the ray (in cm/s).
-    ndens_HI_n1state : ndarray, shape(ngas,)
-        The number density of neutral hydrogen in cells along the ray (in 
-        cm**-3)
-    doppler_parameter_b : ndarray, shape(ngas,)
-        The Doppler parameter (aka Doppler broadening parameter) of the gas in
-        cells along the ray, often abbreviated with the variable ``b``. This
-        has units of cm/s. ``b/sqrt(2)`` specifies the standard deviation of
-        the line-of-sight velocity component. When this quantity is multiplied
-        by ``rest_freq/unyt.c_cgs.v``, you get what Rybicki and Lightman call
-        the "Doppler width". This alternative quantity is a factor of
-        ``sqrt(2)`` larger than the standard deviation of the frequency profile.
-    dz : ndarray, shape(ngas,)
-        The distance travelled by the ray through each cell (in cm).
-    out : ndarray, shape(nfreq,)
-        Array to hold the outputs
-    """
-    cdef C_LineProps c_line_props = get_LineProps_struct(line_props)
-
-    cdef RayAlignedProps ray_data = get_RayAlignedProps(
-        num_segments = dz.shape[0],
-        dz = dz, vLOS = vLOS, ndens = ndens_HI_n1state, kinetic_T = kinetic_T,
-        precomputed_doppler_parameter_b = doppler_parameter_b
-    )
-    optically_thin_21cm_ray_spectrum_impl(c_line_props,
-                                          obs_freq.shape[0], &obs_freq[0],
-                                          ray_data, &out[0])
-    return out
 
 from .ray_traversal import traverse_grid, max_num_intersections
 from .rt_config import default_spin_flip_props
@@ -595,6 +526,15 @@ cdef extern from "cpp/generate_ray_spectra.hpp":
                              double* out_integrated_source,
                              double* out_tau)
 
+    int external_single_ray_rt_wrapper(
+        int legacy_optically_thin_spin_flip,
+        C_LineProps line_props,
+        const long nfreq, const double* obs_freq,
+        const RayAlignedProps ray_aligned_data,
+        optional[LinInterpPartitionFn] partition_fn_pack,
+        double* out_integrated_source,
+        double* out_tau)
+
 cdef MathVecCollecView build_MathVecCollecView(object npy_vec_collec) except *:
     dtype = np.dtype('=f8')
     expected_strides = (3*dtype.itemsize, dtype.itemsize)
@@ -803,26 +743,110 @@ def _generate_ray_spectrum(bint legacy_optically_thin_spin_flip,
         ]
         return out_l
 
+def _single_ray_spectrum_helper(bint optically_thin,
+                                object line_props,
+                                const double[::1] obs_freq,
+                                double[::1] vLOS,
+                                double[::1] ndens,
+                                double[::1] doppler_parameter_b,
+                                double[::1] kinetic_T,
+                                double[::1] dz,
+                                double[::1] out_integrated_source,
+                                double[::1] out_tau = None,
+                                PyLinInterpPartitionFunc partition_func = None):
 
-####### DOWN HERE WE DEFINE STUFF RELATED TO FULL (NO-SCATTER) RT
+    cdef C_LineProps c_line_props = get_LineProps_struct(line_props)
+
+    cdef RayAlignedProps ray_data = get_RayAlignedProps(
+        num_segments = dz.shape[0],
+        dz = dz, vLOS = vLOS, ndens = ndens, kinetic_T = kinetic_T,
+        precomputed_doppler_parameter_b = doppler_parameter_b
+    )
+
+    cdef optional[LinInterpPartitionFn] maybe_partition_fn
+    if partition_func is None:
+        maybe_partition_fn = optional[LinInterpPartitionFn]()
+    else:
+        maybe_partition_fn = partition_func.get_partition_fn_struct()
+
+    cdef double* out_tau_ptr = NULL
+    if out_tau is not None:
+        out_tau_ptr = &out_tau[0]
+
+    cdef int legacy_optically_thin_spin_flip = int(optically_thin)
+
+    cdef int errcode = external_single_ray_rt_wrapper(
+        legacy_optically_thin_spin_flip = legacy_optically_thin_spin_flip,
+        line_props = c_line_props,
+        nfreq = obs_freq.shape[0], obs_freq = &obs_freq[0],
+        ray_aligned_data = ray_data,
+        partition_fn_pack = maybe_partition_fn,
+        out_integrated_source = &out_integrated_source[0],
+        out_tau = out_tau_ptr)
+    if errcode != 0:
+        raise RuntimeError("SOMETHING WENT WRONG")
+
+def _generate_opticallythin_spectrum_cy(object line_props,
+                                        const double[::1] obs_freq,
+                                        double[::1] vLOS,
+                                        double[::1] ndens_HI_n1state,
+                                        double[::1] doppler_parameter_b,
+                                        double[::1] dz,
+                                        double[::1] out,
+                                        double[::1] kinetic_T = None):
+    """
+    Compute specific intensity (aka monochromatic intensity) from data measured
+    along the path of a single ray.
+
+    While we only consider the path of a given ray, specific intensity
+    actually describes a continuum of rays with infintesimal differences.
+    Specific intensity is the amount of energy carried by light in frequency
+    range $d\nu$, over time $dt$ along the collection of all rays that pass
+    through a patch of area $dA$ (oriented normal to the given-ray) whose
+    directions subtend a solid angle of $d\Omega$ around the given-ray.
+
+    For computational convenience, a single call to this function will compute
+    the specific intensity at multiple different frequencies.
+
+    The resulting array should be understood to have units of
+    erg/(cm**2 * Hz * s * steradian).
+
+    Parameters
+    ----------
+    line_props : LineProps
+        Encodes details about the line transition
+    obs_freq : ndarray, shape(nfreq,)
+        Array of frequencies to perform radiative transfer at (in Hz).
+    vLOS : ndarray, shape(ngas,)
+        Velocities of the gas in cells along the ray (in cm/s).
+    ndens_HI_n1state : ndarray, shape(ngas,)
+        The number density of neutral hydrogen in cells along the ray (in 
+        cm**-3)
+    doppler_parameter_b : ndarray, shape(ngas,)
+        The Doppler parameter (aka Doppler broadening parameter) of the gas in
+        cells along the ray, often abbreviated with the variable ``b``. This
+        has units of cm/s. ``b/sqrt(2)`` specifies the standard deviation of
+        the line-of-sight velocity component. When this quantity is multiplied
+        by ``rest_freq/unyt.c_cgs.v``, you get what Rybicki and Lightman call
+        the "Doppler width". This alternative quantity is a factor of
+        ``sqrt(2)`` larger than the standard deviation of the frequency profile.
+    dz : ndarray, shape(ngas,)
+        The distance travelled by the ray through each cell (in cm).
+    out : ndarray, shape(nfreq,)
+        Array to hold the outputs
+    """
+    
+    _single_ray_spectrum_helper(
+        optically_thin = True, line_props = line_props, obs_freq = obs_freq,
+        vLOS = vLOS, ndens = ndens_HI_n1state, kinetic_T = kinetic_T,
+        doppler_parameter_b = doppler_parameter_b, dz = dz, 
+        out_integrated_source = out, out_tau = None,
+        partition_func = None)
+
+    return out
 
 class NdensRatio:
     hi_div_lo: np.ndarray
-
-# further optimization ideas:
-# 1. don't allow level_pops_arg to be an arbitrary python object
-#    (i.e. implement the partition function interpolation in C/C++)
-#    -> this would allow us to make use of fused types
-#       -> this would further allow us to entirely avoid allocating 2 arrays
-#          to hold precomputed values
-#    -> we could also then declare kinetic_T as a memoryview
-#
-# 2. modify update_IntegralStructNoScatterRT so that it operates on individual
-#    frequencies (either by making the method operate on individual frequencies
-#    or by allocating separate IntegralStructNoScatterRT for each freq)
-#
-# 3. Modify the doppler-parameter calculation to happen on the fly (since we
-#    are already passing in the kinetic temperature anyways)
 
 
 def _generate_noscatter_spectrum_cy(object line_props,
@@ -900,26 +924,13 @@ def _generate_noscatter_spectrum_cy(object line_props,
         and such that it increases as we move backwards along the ray (i.e. it
         increases with distance from the observer)
     """
-    cdef C_LineProps c_line_props = get_LineProps_struct(line_props)
-
-    cdef PyLinInterpPartitionFunc partition_fn
-    cdef LinInterpPartitionFn partition_fn_pack
-
-    cdef RayAlignedProps ray_data = get_RayAlignedProps(
-        num_segments = dz.shape[0],
-        dz = dz, vLOS = vLOS, ndens = ndens, kinetic_T = kinetic_T,
-        precomputed_doppler_parameter_b = doppler_parameter_b
-    )
-
-    if isinstance(level_pops_arg, PyLinInterpPartitionFunc):
-        partition_fn = <PyLinInterpPartitionFunc>level_pops_arg
-        partition_fn_pack = partition_fn.get_partition_fn_struct()
-
-        errcode = generate_noscatter_spectrum_impl(
-            c_line_props, obs_freq.shape[0], &obs_freq[0], ray_data,
-            partition_fn_pack, &out_integrated_source[0], &out_tau[0])
-    else:
+    if not isinstance(level_pops_arg, PyLinInterpPartitionFunc):
         raise ValueError("unallowed/untested level_pops_arg")
 
-    if errcode != 0:
-        raise RuntimeError("SOMETHING WENT WRONG")
+    _single_ray_spectrum_helper(
+        optically_thin = False, line_props = line_props, obs_freq = obs_freq,
+        vLOS = vLOS, ndens = ndens, kinetic_T = kinetic_T,
+        doppler_parameter_b = doppler_parameter_b, dz = dz, 
+        out_integrated_source = out_integrated_source, out_tau = out_tau,
+        partition_func = level_pops_arg)
+    return out_integrated_source, out_tau

@@ -3,6 +3,7 @@
 from setuptools import setup, find_packages
 from setuptools.extension import Extension
 from setuptools.command.build_ext import build_ext as _build_ext
+import os
 
 class build_ext(_build_ext):
     # subclass setuptools extension builder to avoid importing numpy
@@ -14,6 +15,15 @@ class build_ext(_build_ext):
         __builtins__.__NUMPY_SETUP__ = False
         import numpy
         self.include_dirs.append(numpy.get_include())
+
+def _get_cpp_headers(dir_path):
+    def _is_header(dir_entry):
+        _, ext = os.path.splitext(dir_entry.name)
+        valid_ext = (ext == '.h') or (ext == '.hpp')
+        return dir_entry.is_file(follow_symlinks=True) and valid_ext
+
+    with os.scandir(dir_path) as it:
+        return sorted(dir_entry.path for dir_entry in filter(_is_header, it))
 
 extra_kwargs = {}
 ext_modules = [
@@ -33,6 +43,7 @@ ext_modules = [
               define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
               language = 'c++',
               extra_compile_args = ['--std=c++17'],
+              depends = _get_cpp_headers(dir_path = 'gasimage/cpp'),
               **extra_kwargs
     ),
     #Extension('gasimage.utilts._ArrayDict_cy',

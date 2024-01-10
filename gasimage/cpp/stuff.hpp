@@ -3,7 +3,7 @@
 #include "err.hpp"
 #include <algorithm>   // std::distance, std::lower_bound
 #include <cmath>       // std::exp, std::isnan, std::log10, std::sqrt
-#include <type_traits> // std::is_same_v
+#include <optional>    // std::is_same_v
 
 
 // define some constants!
@@ -226,36 +226,145 @@ struct Ndens_And_Ratio{
   double n2g1_div_n1g2;
 };
 
-inline Ndens_And_Ratio ndens_and_ratio_from_partition(
-  LinInterpPartitionFn partition_fn_pack, double kinetic_T,
-  double ndens_ion_species, C_LineProps line_props) noexcept
-{
-
-  double restframe_energy_photon_erg = line_props.freq_Hz * HPLANCK_CGS;
-  double beta_cgs = 1.0 / (kinetic_T * KBOLTZ_CGS);
-
-  double ndens_1 = (
-    ndens_ion_species * line_props.g_lo * std::exp(-line_props.energy_lo_erg
-                                                   * beta_cgs)
-    / eval_partition_fn(partition_fn_pack, kinetic_T) 
-  );
-
-  // n1/n2 = (g1/g2) * exp(restframe_energy_photon_cgs * beta_cgs)
-  // n2/n1 = (g2/g1) * exp(-restframe_energy_photon_cgs * beta_cgs)
-  // (n2*g1)/(n1*g2) = exp(-restframe_energy_photon_cgs * beta_cgs)
-  double n2g1_div_n1g2 = std::exp(-1 * restframe_energy_photon_erg * beta_cgs);
-
-  return {ndens_1, n2g1_div_n1g2};
-}
-
 } // anonymous namespace
 
-inline void optically_thin_21cm_ray_spectrum_impl(const C_LineProps line_props,
-                                           const long nfreq,
-                                           const double* obs_freq,
-                                           const RayAlignedProps ray_aligned_data,
-                                           double* out) noexcept
+/// specifies the "strategy" when it comes to number density.
+///
+/// To be a little more clear:
+///   - this specifies the interpretation of the ndens field
+///   - it also specifies how we compute the ratio of the number densities
+///     of the absorbers and emitters
+enum class NdensStrat{
+  // the ndens field gives the total number density of the ion species.
+  // -> the user must provide a partition function; it is used to compute the
+  //    number density of the absorber (assuming LTE)
+  // -> the number-density ratio is assumed to match LTE
+  IonNDensGrid_LTERatio,
+
+  AbsorberNDensGrid_LTERatio,
+
+  // It might be nice to support the following case in the future
+  //AbsorberNDensGrid_ArbitraryRatio
+
+  // this is what we have traditionally used in the optically-thin case
+  // -> we effectively assume that the number density field gives the
+  //    number-density of Hydrogen in the electronic ground state (n = 1).
+  //    This is the sum of the number densities in the spin 0 and spin 1 states
+  // -> we assume that the ratio of number densities is directly given by the
+  //    statistical weights...
+  SpecialLegacySpinFlipCase
+};
+
+template<NdensStrat Strat>
+struct NdensFetcher{
+  const std::optional<LinInterpPartitionFn> partition_func;
+
+  NdensFetcher(const std::optional<LinInterpPartitionFn>& partition_func)
+    : partition_func(partition_func)
+  {
+    if ((Strat == NdensStrat::IonNDensGrid_LTERatio) &&
+        (! bool(this->partition_func))) {
+      ERROR("partition_func must not be empty for "
+            "NdensStrat::IonNDensGrid_LTERatio");
+    }
+  }
+
+  [[gnu::always_inline]] inline Ndens_And_Ratio
+  get_pair(long pos_i, const RayAlignedProps ray_data,
+           const C_LineProps line_props) const noexcept
+  {
+    if constexpr (Strat == NdensStrat::IonNDensGrid_LTERatio) {
+
+      // in this case:
+      // -> treat level_pops_arg as partition function
+      // -> treat ndens as number density of particles described by
+      //    partition function
+      // -> assume LTE
+
+      double restframe_energy_photon_erg = line_props.freq_Hz * HPLANCK_CGS;
+      double beta_cgs = 1.0 / (ray_data.kinetic_T[pos_i] * KBOLTZ_CGS);
+
+      double ndens_1 =
+        ( ray_data.ndens[pos_i] * line_props.g_lo *
+          std::exp(-line_props.energy_lo_erg * beta_cgs) /
+          eval_partition_fn(*this->partition_func,
+                            ray_data.kinetic_T[pos_i]) );
+
+      // n1/n2 = (g1/g2) * exp(restframe_energy_photon_cgs * beta_cgs)
+      // n2/n1 = (g2/g1) * exp(-restframe_energy_photon_cgs * beta_cgs)
+      // (n2*g1)/(n1*g2) = exp(-restframe_energy_photon_cgs * beta_cgs)
+      double n2g1_div_n1g2 = std::exp(-1 * restframe_energy_photon_erg *
+                                      beta_cgs);
+      return {ndens_1, n2g1_div_n1g2};
+
+    } else if constexpr (Strat == NdensStrat::AbsorberNDensGrid_LTERatio) {
+
+      // not rigorously tested!
+      double restframe_energy_photon_erg = line_props.freq_Hz * HPLANCK_CGS;
+      double beta_cgs = 1.0 / (ray_data.kinetic_T[pos_i] * KBOLTZ_CGS);
+
+      double ndens_1 = ray_data.ndens[pos_i];
+      double n2g1_div_n1g2 = std::exp(-1 * restframe_energy_photon_erg *
+                                      beta_cgs);
+      return {ndens_1, n2g1_div_n1g2};
+
+    } else if constexpr (Strat == NdensStrat::SpecialLegacySpinFlipCase) {
+
+      // in this case, assume that ray_data.ndens gives the total number
+      // density of neutral hydrogen in the n = 1 state (the electronic ground
+      // state) 
+      //
+      // compute ndens in state 2 (the higher energy state), by combining info
+      // from following points:
+      // - this fn ASSUMES that `exp(-h_cgs*rest_freq / (kboltz_cgs * T_spin))`
+      //   is approximately 1 (this is a fairly decent assumption)
+      // - consequently:                                n_2 / n_1 == g_2 / g_1
+      // - for 21cm transition, g_2 = 3 and g_1 = 1
+      // - since n_1 and n_2 are the only states:         n1 + n2 == ndens
+      // -> Putting these together:                 n_2 / 3 + n_2 == ndens
+      // -> Thus: n_1 = 0.25 * ndens & n_2 = 0.75 * ndens
+
+      double ndens_1 = 0.25 * ray_data.ndens[pos_i];
+      double n2g1_div_n1g2 = 1.0;
+      return {ndens_1, n2g1_div_n1g2};
+
+    } else {
+      // maybe use static_assert(false) here!
+      ERROR("THERE IS AN ERROR");
+    }
+  }
+
+  // the following exists for backwards compatibility
+  [[gnu::always_inline]] inline double
+  get_ndens_emitter(long pos_i, const RayAlignedProps ray_data,
+                    const C_LineProps line_props) const noexcept
+  {
+    if constexpr (Strat == NdensStrat::SpecialLegacySpinFlipCase) {
+      return 0.75 * ray_data.ndens[pos_i];
+    } else {
+      Ndens_And_Ratio pair = get_pair(pos_i, ray_data, line_props);
+      return (line_props.g_hi * pair.ndens_1 * pair.n2g1_div_n1g2 /
+              double(line_props.g_lo)); 
+    }
+  }
+
+};
+
+
+template<bool using_precalculated_doppler,
+         NdensStrat ndens_strat = NdensStrat::SpecialLegacySpinFlipCase>
+inline void optically_thin_21cm_ray_spectrum_impl
+(const C_LineProps line_props, 
+ const double inv_particle_mass_cgs,
+ const long nfreq,
+ const double* obs_freq,
+ const RayAlignedProps ray_aligned_data,
+ const NdensFetcher<ndens_strat> ndens_fetcher,
+ double* out) noexcept
 {
+  static_assert(ndens_strat == NdensStrat::SpecialLegacySpinFlipCase,
+                "we haven't tested other ndens strategies");
+
   // set all values in the output array to 0.0
   for(long freq_i = 0; freq_i < nfreq; freq_i++) { out[freq_i] = 0.0; }
 
@@ -271,31 +380,25 @@ inline void optically_thin_21cm_ray_spectrum_impl(const C_LineProps line_props,
   //      - the number density in the higher-energy state is $n_2$
   //      - the rate of spontaneous emission is $A_{21}$
   // We adopt the latter notation
-  const double* ndens_HI_n1state = ray_aligned_data.ndens;
 
   const double rest_freq = line_props.freq_Hz;
 
   // iterate over gas-elements
   for(long pos_i = 0; pos_i < ray_aligned_data.num_segments; pos_i++) {
-
-    // compute ndens in state 2 (the higher energy state), by combining info
-    // from following points:
-    // - this fn ASSUMES that ``exp(-h_cgs*rest_freq / (kboltz_cgs * T_spin))``
-    //   is approximately 1 (this is a fairly decent assumption)
-    // - consequently:                                  n_2 / n_1 == g_2 / g_1
-    // - for 21cm transition, g_2 = 3 and g_1 = 1
-    // - since n_1 and n_2 are the only states:               n1 + n2 == ndens
-    // -> Putting these together:                       n_2 / 3 + n_2 == ndens
-    //                       OR                           4 * n_2 / 3 == ndens
-    const double n_2 = 0.75 * ndens_HI_n1state[pos_i];
+    const double n_2 = ndens_fetcher.get_ndens_emitter(pos_i, ray_aligned_data,
+                                                       line_props);
 
     // fetch the length of the path through the current gas-element
     const double cur_dz = ray_aligned_data.dz[pos_i];
 
     // construct the profile for the current gas-element
+    double doppler_parameter_b = (using_precalculated_doppler)
+      ? ray_aligned_data.precomputed_doppler_parameter_b[pos_i]
+      : doppler_parameter_b_from_temperature(ray_aligned_data.kinetic_T[pos_i],
+                                             inv_particle_mass_cgs);
+
     const LineProfileStruct prof = prep_LineProfHelper
-      (rest_freq, ray_aligned_data.precomputed_doppler_parameter_b[pos_i],
-       ray_aligned_data.vLOS[pos_i]);
+      (rest_freq, doppler_parameter_b, ray_aligned_data.vLOS[pos_i]);
 
     for (long freq_i = 0; freq_i < nfreq; freq_i++) { // iterate over obs_freq
       double profile_val = eval_line_profile(obs_freq[freq_i], rest_freq, prof);
@@ -333,7 +436,7 @@ inline void optically_thin_21cm_ray_spectrum_impl(const C_LineProps line_props,
 /// \f]
 struct IntegralStructNoScatterRT {
   /// this specifies the length of all pointers held by this struct
-  long nfreq;
+  const long nfreq;
 
   // the next 2 variables are accumulator variables that serve as outputs
   // -> they each accumulate values separately for each considered frequency
@@ -344,38 +447,58 @@ struct IntegralStructNoScatterRT {
   // this last variable is managed by the struct (we use it to cache
   // expensive exponential evaluations)
   double* segStart_expNegTau;
+
+  IntegralStructNoScatterRT() = delete;
+
+  IntegralStructNoScatterRT(long nfreq, double* total_tau,
+                            double* integrated_source) noexcept
+    : nfreq(nfreq),
+      total_tau(total_tau),
+      integrated_source(integrated_source),
+      segStart_expNegTau(nullptr)
+  {
+    if (nfreq <= 0) ERROR("nfreq must be positive!");
+    this->segStart_expNegTau = new double[nfreq];
+
+    // finally, lets initialize total_tau & segStart_expNegTau so that they have
+    // the correct values for the start of the integral
+    // -> essentially, we need to initialize the value at the end of the ray
+    //    closest to the observer
+    // -> by convention, we define the tau at this location to have an optical
+    //    depth of zeros at all frequencies (we can always increase the optical
+    //    depth used here after we finish the integral)
+    // we also set integrated_source to have values of 0.0
+    for (long i = 0; i < nfreq; i++){
+      this->total_tau[i] = 0.0;
+      this->segStart_expNegTau[i] = 1.0; // = std::exp(-this->total_tau[i])
+      this->integrated_source[i] = 0.0;
+    }
+  }
+
+  ~IntegralStructNoScatterRT() noexcept {
+    if (this->segStart_expNegTau != nullptr) {
+      delete[] this->segStart_expNegTau;
+    }
+  }
+
+  /// Updates the accumulated values for a single frequency, given values for
+  /// the current ray-segment
+  ///
+  /// @note
+  /// This function should be called repeatedly for all frequencies at a
+  /// current segment of the ray. Then it should be called again repeatedly for
+  /// sections of the ray progressively further from the observer.
+  ///
+  /// @note
+  /// It's okay for this be declared ``const`` since we are updating values
+  /// within the pointers
+  [[gnu::always_inline]] inline void update(long freq_i,
+                                            double absorption_coef,
+                                            double source_function,
+                                            double dz) const noexcept;
 };
 
-inline IntegralStructNoScatterRT prep_IntegralStructNoScatterRT(
-  long nfreq, double* total_tau, double* integrated_source
-)
-{
-  // the nfreq field of the resulting struct is set to 0 if this function
-  // encounters issues
-
-  if (nfreq <= 0) return {0, nullptr, nullptr, nullptr};
-
-  IntegralStructNoScatterRT out{nfreq, total_tau, integrated_source, nullptr};
-  out.segStart_expNegTau = new double[nfreq];
-
-  // finally, lets initialize total_tau & segStart_expNegTau so that they have
-  // the correct values for the start of the integral
-  // -> essentially, we need to initialize the value at the end of the ray
-  //    closest to the observer
-  // -> by convention, we define the tau at this location to have an optical
-  //    depth of zeros at all frequencies (we can always increase the optical
-  //    depth used here after we finish the integral)
-  // we also set integrated_source to have values of 0.0
-  for (long freq_i = 0; freq_i < nfreq; freq_i++){
-    out.total_tau[freq_i] = 0.0;
-    out.segStart_expNegTau[freq_i] = 1.0; // = std::exp(-out.total_tau[freq_i])
-    out.integrated_source[freq_i] = 0.0;
-  }
-  return out;
-}
-
-/*
- * the following function effectively updates the tracked integral (at all
+/* the following function effectively updates the tracked integral (at all
  * frequencies, for a single segment of the ray)
  *
  * In general, we are effectively solving the following integral (dependence on
@@ -432,60 +555,57 @@ inline IntegralStructNoScatterRT prep_IntegralStructNoScatterRT(
  * This function should be repeatedly called moving progressively further from
  * the observer
  */
-inline void update_IntegralStructNoScatterRT(const IntegralStructNoScatterRT& obj,
-                                      const double* absorption_coef,
-                                      double source_function, double dz)
+[[gnu::always_inline]] inline void
+IntegralStructNoScatterRT::update(long freq_i,
+                                  double absorption_coef,
+                                  double source_function,
+                                  double dz) const noexcept
 {
-  // NOTE: its ok to pass obj by value since the only thing being updated are
-  //       pointers pointer held by obj
-  // implicit assumption: absorption_coef has obj.nfreq entries
+  // implicit assumption: 0 <= freq_i < this->nfreq
 
-  for (long freq_i = 0; freq_i < obj.nfreq; freq_i++) {
-    // part 0: precompute -exp(obj.total_tau[freq_i])
-    // -> we need to know the exponential of negative optical depth at start
-    //    of current segment
-    //
-    // this is done implicitly. The value is equivalent to
-    // obj.segStart_expNegTau[freq_i]
+  // part 0: precompute -exp(this->total_tau[freq_i])
+  // -> we need to know the exponential of negative optical depth at start
+  //    of current segment
+  //
+  // this is done implicitly. The value is equivalent to
+  // this->segStart_expNegTau[freq_i]
 
-    // part 1: update obj.total_tau[freq_i] so that it holds the
-    //         optical-depth at the end of the current segment
-    // -> this is equivalent to saying do the integral over tau in the
-    //    current segment
-    //
-    // recall: we defined tau so that it is increasing as we move away from
-    //         the observer
-    obj.total_tau[freq_i] += (absorption_coef[freq_i] * dz);
+  // part 1: update this->total_tau[freq_i] so that it holds the
+  //         optical-depth at the end of the current segment
+  // -> this is equivalent to saying do the integral over tau in the
+  //    current segment
+  //
+  // recall: we defined tau so that it is increasing as we move away from
+  //         the observer
+  this->total_tau[freq_i] += (absorption_coef * dz);
 
-    // part 2: perform the integral over the source term in current segment
-    // first, compute the value of exp(-tau) at end of the current segment
-    double cur_segEnd_expNegTau = std::exp(-obj.total_tau[freq_i]);
-    // next, update the integrated source term
-    double diff = obj.segStart_expNegTau[freq_i] - cur_segEnd_expNegTau;
-    obj.integrated_source[freq_i] += (source_function * diff);
+  // part 2: perform the integral over the source term in current segment
+  // first, compute the value of exp(-tau) at end of the current segment
+  double cur_segEnd_expNegTau = std::exp(-this->total_tau[freq_i]);
+  // next, update the integrated source term
+  double diff = this->segStart_expNegTau[freq_i] - cur_segEnd_expNegTau;
+  this->integrated_source[freq_i] += (source_function * diff);
 
-    // part 3: prepare for next segment (the value of expNegTau at the end of
-    // the current segment is the value at the start of the next segment)
-    obj.segStart_expNegTau[freq_i] = cur_segEnd_expNegTau;
-  }
+  // part 3: prepare for next segment (the value of expNegTau at the end of
+  // the current segment is the value at the start of the next segment)
+  this->segStart_expNegTau[freq_i] = cur_segEnd_expNegTau;
 }
 
-inline void clean_IntegralStructNoScatterRT(const IntegralStructNoScatterRT obj)
+template<bool using_precalculated_doppler,
+         NdensStrat ndens_strat = NdensStrat::IonNDensGrid_LTERatio>
+inline int generate_noscatter_spectrum_impl
+(C_LineProps line_props,
+ const double inv_particle_mass_cgs,
+ const long nfreq,
+ const double* obs_freq,
+ const RayAlignedProps ray_aligned_data,
+ const NdensFetcher<ndens_strat> ndens_fetcher,
+ double* out_integrated_source,
+ double* out_tau)
 {
-  if ((obj.nfreq > 0) && (obj.segStart_expNegTau != nullptr)) {
-      delete[] obj.segStart_expNegTau;
-  }
-}
+  static_assert(ndens_strat == NdensStrat::IonNDensGrid_LTERatio,
+                "we haven't tested other ndens strategies");
 
-
-inline int generate_noscatter_spectrum_impl(C_LineProps line_props,
-                                     const long nfreq,
-                                     const double* obs_freq,
-                                     const RayAlignedProps ray_aligned_data,
-                                     const LinInterpPartitionFn partition_fn_pack,
-                                     double* out_integrated_source,
-                                     double* out_tau)
-{
   // load transition properties:
   const double rest_freq_Hz = line_props.freq_Hz;
 
@@ -495,8 +615,7 @@ inline int generate_noscatter_spectrum_impl(C_LineProps line_props,
   // - A21 gives the rate of spontaneous emission
   const double B12_cgs = line_props.B12_cgs;
 
-  IntegralStructNoScatterRT accumulator =
-    prep_IntegralStructNoScatterRT(nfreq, out_tau, out_integrated_source);
+  IntegralStructNoScatterRT accumulator(nfreq, out_tau, out_integrated_source);
 
   if (accumulator.nfreq < 1) return 1; // prob with initializing accumulator!
 
@@ -504,21 +623,10 @@ inline int generate_noscatter_spectrum_impl(C_LineProps line_props,
   const double source_func_numerator = (2*HPLANCK_CGS * rest_freq3 /
                                         (C_CGS * C_CGS));
 
-  double* alpha_nu_cgs = new double[nfreq];
-
   for (long pos_i = 0; pos_i < ray_aligned_data.num_segments; pos_i++) {
 
-    Ndens_And_Ratio tmp_pair;
-    if (true) {
-      // in this case:
-      // -> treat level_pops_arg as partition function
-      // -> treat ndens as number density of particles described by
-      //    partition function
-      // -> assume LTE
-      tmp_pair = ndens_and_ratio_from_partition
-        (partition_fn_pack, ray_aligned_data.kinetic_T[pos_i],
-         ray_aligned_data.ndens[pos_i], line_props);
-    }
+    Ndens_And_Ratio tmp_pair = ndens_fetcher.get_pair(pos_i, ray_aligned_data,
+                                                      line_props);
 
     // Using equations 1.78 and 1.79 of Rybicki and Lighman to get
     // - absorption coefficient (with units of cm**-1), including the
@@ -527,22 +635,21 @@ inline int generate_noscatter_spectrum_impl(C_LineProps line_props,
     // - NOTE: there are some weird ambiguities in the frequency dependence in
     //   these equations. These are discussed below.
 
-    // first compute alpha at the line-center (ignoring broadening profile)
-    // & then compute alpha as a function of frequency:
+    // first compute alpha_norm (normalization of linear absoprtion coef)
+    // -> the absorption at a given frequency is this quantity multiplied by
+    //    the line profile
     double stim_emission_correction = (1.0 - tmp_pair.n2g1_div_n1g2);
-    double alpha_center = (HPLANCK_CGS * rest_freq_Hz * tmp_pair.ndens_1 *
-                           B12_cgs * stim_emission_correction) / (4* M_PI);
+    double alpha_norm = (HPLANCK_CGS * rest_freq_Hz * tmp_pair.ndens_1 *
+                         B12_cgs * stim_emission_correction) / (4* M_PI);
 
     // construct the profile for the current gas-element
-    LineProfileStruct prof = prep_LineProfHelper
-      (rest_freq_Hz, ray_aligned_data.precomputed_doppler_parameter_b[pos_i],
-       ray_aligned_data.vLOS[pos_i]);
+    double doppler_parameter_b = (using_precalculated_doppler)
+      ? ray_aligned_data.precomputed_doppler_parameter_b[pos_i]
+      : doppler_parameter_b_from_temperature(ray_aligned_data.kinetic_T[pos_i],
+                                             inv_particle_mass_cgs);
 
-    for (long freq_i = 0; freq_i < nfreq; freq_i++) {
-      double profile_val = eval_line_profile(obs_freq[freq_i], rest_freq_Hz,
-                                             prof);
-      alpha_nu_cgs[freq_i] = alpha_center * profile_val;
-    }
+    const LineProfileStruct prof = prep_LineProfHelper
+      (rest_freq_Hz, doppler_parameter_b, ray_aligned_data.vLOS[pos_i]);
 
     double source_func_cgs =
       source_func_numerator / ((1.0/tmp_pair.n2g1_div_n1g2) - 1.0);
@@ -575,15 +682,18 @@ inline int generate_noscatter_spectrum_impl(C_LineProps line_props,
     //
     // now that we know the source-function and the absorption coefficient,
     // let's compute the integral(s) for the current section of the array
-    update_IntegralStructNoScatterRT(accumulator, alpha_nu_cgs,
-                                     source_func_cgs,
-                                     ray_aligned_data.dz[pos_i]);
 
+    for (long freq_i = 0; freq_i < nfreq; freq_i++){
+      // get the absorption coefficient at current freq
+      double profile_val = eval_line_profile(obs_freq[freq_i], rest_freq_Hz,
+                                             prof);
+      double alpha_nu_cgs = alpha_norm * profile_val;
+
+      // actually update the integrated quantities
+      accumulator.update(freq_i, alpha_nu_cgs, source_func_cgs,
+                         ray_aligned_data.dz[pos_i]);
+    }
   }
-
-  // do some cleanup!
-  clean_IntegralStructNoScatterRT(accumulator);
-  delete[] alpha_nu_cgs;
 
   return 0;
 }
