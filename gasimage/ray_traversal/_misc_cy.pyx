@@ -297,8 +297,9 @@ cdef assign_spatial_props_vals(SpatialGridPropsStruct* pack,
         pack.cell_width[i] = cell_width[i]
 
         pack.inv_cell_width[i] = 1.0 / cell_width[i]
-    
 
+cdef object create_3elem_array_cpy(double* ptr):
+    return np.array([float(ptr[0]), float(ptr[1]), float(ptr[2])])
 
 cdef class SpatialGridProps:
     """
@@ -311,6 +312,9 @@ cdef class SpatialGridProps:
     in adiabatic simulations. It's unclear whether that functionality still
     works properly (it definitely hasn't been tested in all contexts).
     """
+
+    # note: we don't have a line with `cdef SpatialGridPropsStruct pack` here
+    #       since it is declared in the associated header file
 
     @property
     def cm_per_length_unit(self):
@@ -325,24 +329,15 @@ cdef class SpatialGridProps:
 
     @property
     def left_edge(self):
-        return np.array(
-            [self.pack.left_edge[0], self.pack.left_edge[1],
-             self.pack.left_edge[2]]
-        )
+        return create_3elem_array_cpy(&self.pack.left_edge[0])
 
     @property
     def right_edge(self):
-        return np.array(
-            [self.pack.right_edge[0], self.pack.right_edge[1],
-             self.pack.right_edge[2]]
-        )
+        return create_3elem_array_cpy(&self.pack.right_edge[0])
 
     @property
     def cell_width(self):
-        return np.array(
-            [self.pack.cell_width[0], self.pack.cell_width[1],
-             self.pack.cell_width[2]]
-        )
+        return create_3elem_array_cpy(&self.pack.cell_width[0])
 
     @cell_width.setter
     def cell_width(self, value):
@@ -352,6 +347,7 @@ cdef class SpatialGridProps:
             self.pack.inv_cell_width[i] = 1.0 / value[i]
 
     def __getstate__(self):
+        # used in the process of pickling (constructing the pickle data)
         out = {}
         for attr in ['cm_per_length_unit','grid_shape',
                      'left_edge', 'right_edge', 'cell_width']:
@@ -359,6 +355,7 @@ cdef class SpatialGridProps:
         return out
 
     def __setstate__(self, state):
+        # used in the process of unpickling
         assign_spatial_props_vals(
             pack = &(self.pack),
             cm_per_length_unit = state['cm_per_length_unit'],
@@ -456,3 +453,30 @@ def get_grid_center(spatial_props):
 
 def get_grid_width(spatial_props):
     return spatial_props.right_edge - spatial_props.left_edge
+
+def spatial_props_from_ds(ds, length_unit = 'code_length', *,
+                          rescale_factor = 1.0):
+    """
+    Construct a SpatialGridProps instance for a yt-dataset
+
+    Parameters
+    ----------
+    ds
+        The yt-dataset from which we will construct spatial properties
+    length_unit: str
+        This represents the length units associated with the quantities in the
+        resulting object.
+    rescale_length_factor: float, optional
+        The width of each cell is multiplied by this factor. (This is intended
+        for use with scale-free simulations, it effectively holds the position
+        of the simulation's origin fixed in place).
+    """
+    if ds.coordinates.axis_order != ('x','y','z'):
+        raise NotImplementedError("Currently, we only support simulations "
+                                  "where axes are ordered ('x','y','z')")
+    return SpatialGridProps(
+        cm_per_length_unit = float(ds.quan(1.0, length_unit).to('cm').v),
+        grid_shape = ds.domain_dimensions,
+        grid_left_edge = ds.domain_left_edge.to(length_unit).ndview,
+        grid_right_edge = ds.domain_right_edge.to(length_unit).ndview,
+        rescale_factor = rescale_factor)

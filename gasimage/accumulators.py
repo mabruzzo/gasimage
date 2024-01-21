@@ -33,6 +33,7 @@ Rather than thinking of AccumStratT as an abstract base class, it's more of a
    -> post_process_rslt
 """
 
+from collections.abc import Sequence
 from typing import Any, Callable, Dict, Tuple, TypeVar
 
 import numpy as np
@@ -42,6 +43,7 @@ from .generate_ray_spectrum import generate_ray_spectrum_legacy
 from ._generate_spec_cy import NdensStrategy, generate_ray_spectrum
 from .ray_traversal._misc_cy import SpatialGridProps
 from .rt_config import LineProperties, default_spin_flip_props
+from .utils.misc import _has_consistent_dims
 
 # define the actual AccumStratT typing stub
 AccumStratT = TypeVar("AccumStratT")
@@ -104,6 +106,7 @@ class OpticallyThinAccumStrat:
     obs_freq_Hz: np.ndarray
     use_cython_gen_spec: bool
     ndens_HI_n1state_field: Tuple[str,str]
+    particle_mass_in_grams: float
     doppler_parameter_b: Any
 
     # class attributes:
@@ -113,7 +116,8 @@ class OpticallyThinAccumStrat:
     def __init__(self, *, obs_freq: unyt.unyt_array,
                  use_cython_gen_spec: bool,
                  ndens_HI_n1state_field: Tuple[str,str],
-                 doppler_parameter_b: Any):
+                 doppler_parameter_b: Any,
+                 particle_mass_in_grams: float = float(unyt.mh_cgs.v)):
         assert np.ndim(obs_freq) == 1
         assert (obs_freq.size > 0) and (obs_freq.ndview > 0).all()
         # make obs_freq_Hz as immutable as possible
@@ -122,6 +126,8 @@ class OpticallyThinAccumStrat:
 
         self.use_cython_gen_spec = use_cython_gen_spec
         self.ndens_HI_n1state_field = ndens_HI_n1state_field
+        self.particle_mass_in_grams = float(particle_mass_in_grams)
+        assert self.particle_mass_in_grams > 0
         self.doppler_parameter_b = doppler_parameter_b
 
     def do_work(self, grid, spatial_grid_props, full_ray_start, full_ray_uvec):
@@ -139,7 +145,7 @@ class OpticallyThinAccumStrat:
                 line_props = default_spin_flip_props(),
                 legacy_optically_thin_spin_flip = True,
                 obs_freq = obs_freq,
-                particle_mass_in_grams = unyt.mh_cgs.v,
+                particle_mass_in_grams = self.particle_mass_in_grams,
                 ndens_strat = NdensStrategy.SpecialLegacySpinFlipCase,
                 ndens_field = self.ndens_HI_n1state_field,
                 partition_func = None,
@@ -289,4 +295,103 @@ class NoScatterRTAccumStrat:
     def post_process_rslt(self, out):
         out['integrated_source'] = unyt.unyt_array(
             out['integrated_source'], 'erg/(cm**2 * Hz * s * steradian)')
-        
+
+def freq_from_v_channels(v_channels, line_props):
+    if not _has_consistent_dims(v_channels, unyt.dimensions.velocity):
+        raise ValueError("v_channels has the wrong units")
+    rest_freq = line_props.freq_quantity
+    return (rest_freq * (1 + v_channels/unyt.c_cgs)).to('Hz')
+
+def configure_single_line_rt(line_props, species_mass_g, ndens_field, *,
+                             kind = 'noscatter', observed_freq = None,
+                             v_channels = None, partition_func = None,
+                             doppler_parameter_b = 'normal'):
+    """
+    Generate the configured accumulation strategy for radiative transfer.
+
+    Parameters
+    ----------
+    line_props : LineProps
+        Encodes details about the line transition
+    species_mass_g : float
+        Specifies the mass of the species in grams
+    ndens_field : tuple of 2 strings
+        Specifies the name of the yt-field that specifies the number density of
+        the relevant particle species.
+        - when `kind == 'noscatter'`, the specified field should correspond to
+          the number-density used in the partition function (so that this field
+          and the parition function can be used to compute the number-density
+          in individual energy states).
+        - when `kind` is either `'noscatter21cm'` or `'opticallyThin21cm'`,
+          the specified field should correspond to the total number density of
+          Hydrogen in the electronic ground state (the electronic state n = 1).
+          In other words, it includes the number density of hydrogen in either
+          the spin-up or spin-down state.
+    kind : {'noscatter', 'noscatter21cm', 'opticallyThin21cm'}
+        Specifies the radiative transfer strategy
+    observed_freq : unyt.unyt_array, Optional
+        Array of frequencies to perform radiative transfer at (in Hz). Either
+        this kwarg or the v_channels must be provided (but not both).
+    v_channels : unyt.unyt_array, Optional
+        Array of velocity channels that we are interested in computing the
+        intensities at. Either this kwarg or the v_channels must be provided
+        (but not both).
+    partition_func : PyLinInterpPartitionFunc, optional
+        Specifies the partition function of the species associated with the
+        transition.
+    doppler_parameter_b: `unyt.unyt_quantity` or `str`
+        Optional parameter that can be used to specify the Doppler parameter
+        (aka Doppler Broadening parameter) assumed for every cell of the
+        simulation. A value of 'normal' will use the correct formula (this is
+        the preferred behavior) for computing the value from the local 
+        temperature. When this is passed 'legacy', we will use the incorrect
+        legacy formula (it involves using mean-molecular-mass instead of
+        aborber/emitter mass). When not specified, this is computed from the
+        local temperature (and mean-molecular-weight). To avoid any ambiguity,
+        this quantity has units consistent with velocity, this quantity is
+        commonly represented by the variable ``b``, and ``b/sqrt(2)`` specifies
+        the standard deviation of the line-of-sight velocity component. Note
+        that ``b * rest_freq / (unyt.c_cgs * sqrt(2))`` specifies the standard
+        deviation of the line-profile for the transition that occurs at a rest
+        frequency of ``rest_freq``.
+    """
+    if not isinstance(line_props, LineProperties):
+        # in the future, we could be more flexible about this...
+        raise TypeError("line_props must be an instance of LineProperties")
+
+    if (observed_freq is None) == (v_channels is None):
+        raise ValueError("One of the `observed_freq` & `v_channels` kwargs is "
+                         "required. It's also incorrect to provide both ")
+    elif observed_freq is None:
+        observed_freq = freq_from_v_channels(v_channels, line_props)
+    else:
+        observed_freq = observed_freq
+
+    assert ndens_field is not None
+
+    if kind == 'noscatter':
+        assert partition_func is not None
+        assert doppler_parameter_b == 'normal'
+
+        return NoScatterRTAccumStrat(
+            obs_freq = freq_from_v_channels(v_channels, line_props),
+            line_props = line_props,
+            species_mass_g = species_mass_g,
+            partition_func = partition_func,
+            ndens_field = ndens_field
+        )
+    elif kind == 'noscatter21cm':
+        raise NotImplementedError("this hasn't been tested quite yet")
+    elif kind == 'opticallyThin21cm':
+        raise RuntimeError("This hasn't been tested quite yet")
+
+        return OpticallyThinAccumStrat(
+            obs_freq = observed_freq,
+            use_cython_gen_spec = True,
+            ndens_HI_n1state_field = ndens_field,
+            doppler_parameter_b = doppler_parameter_b,
+            particle_mass_in_grams = particle_mass_in_grams
+        )
+    else:
+        raise ValueError("kind must be 'noscatter', 'noscatter21cm', or "
+                         "'opticallyThin21cm'")

@@ -21,7 +21,8 @@ except ImportError:
 from .accumulators import (
     AccumStratT,
     OpticallyThinAccumStrat,
-    SpatialGridProps
+    SpatialGridProps,
+    freq_from_v_channels
 )
 from .ray_collection import ConcreteRayList
 from .ray_traversal import ray_box_intersections, traverse_grid
@@ -371,6 +372,8 @@ class CallbackFunctor:
     def __call__(self, rslt):
         grid_index, outputs = rslt
 
+        print(f'processing outputs from block: {grid_index}')
+
         if self.temporary is None:
             # - for testing this pipeline with a parallel-pool, it might be
             #   convenient to add an option to force the contributions to
@@ -605,12 +608,6 @@ def generate_image(accum_strat, ray_collection, ds, *,
             assert out_dict_2D[name].shape == (shape[0],1)
             out_dict[name] = np.squeeze(out_dict[name])
     return out_dict
-
-def freq_from_v_channels(v_channels, line_props):
-    if not _has_consistent_dims(v_channels, unyt.dimensions.velocity):
-        raise ValueError("v_channels has the wrong units")
-    rest_freq = line_props.freq_quantity
-    return (rest_freq * (1 + v_channels/unyt.c_cgs)).to('Hz')
 
 # define the legacy interface for backwards compatability!
 # -> this interface mixes parameterizations of the actual raytracing with the

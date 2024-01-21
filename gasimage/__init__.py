@@ -14,3 +14,5 @@ from gasimage.snapdsinit import SnapDatasetInitializer
 from gasimage.ray_collection import parallel_ray_grid, perspective_ray_grid
 
 from gasimage.rt_config import default_spin_flip_props
+
+from gasimage.ray_traversal._misc_cy import spatial_props_from_ds

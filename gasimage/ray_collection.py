@@ -3,9 +3,12 @@ import warnings
 import numpy as np
 import unyt
 
-from .ray_creation import \
-    convert_observer_to_domain_points, _find_obs_ray_end_points, \
+from .ray_creation import (
+    convert_observer_to_domain_points,
+    _find_obs_ray_end_points,
     _magnitude
+)
+from .ray_traversal._misc_cy import spatial_props_from_ds
 from .utils.misc import _has_consistent_dims
 
 def _is_np_ndarray(obj): # confirm its an instance, but not a subclass
@@ -511,3 +514,83 @@ def parallel_ray_grid(delta_im_x, delta_im_y,
                                     im_y_uvec * delta_im_y[i]).to(ray_start_unit)
         return ParallelRayGrid2D(ray_start = ray_start,
                                  ray_vec = normal_vec)
+
+
+def aligned_parallel_ray_grid(axis, ds, *, rel_observer_pos = 'left'):
+    """
+    Come up a ray collection that is aligned with the axes of a simulation.
+    
+    Parameters
+    ----------
+    axis: : {'x', 'y', 'z'}
+        The axis that the rays are parallel to
+    ds
+        A yt dataset
+    rel_observer_pos : {'left', 'right'}
+        Specifies whether the observer is on the left side or right side of
+        the domain.
+    """
+    length_unit = 'code_length'
+    spatial_props = spatial_props_from_ds(ds, length_unit = length_unit)
+    if axis == 'x':
+        # in this case, the y-axis runs along image-x-axis
+        #               the z-axis runs along image-y-axis
+        aligned_ax_index, imX_axIndex, imY_axIndex = 0, 1, 2
+        ray_vec = np.array([1.0,0.0,0.0])
+    elif axis == 'y':
+        # in this case, the z-axis runs along image-x-axis
+        #               the x-axis runs along image-y-axis
+        aligned_ax_index, imX_axIndex, imY_axIndex = 1, 2, 0
+        ray_vec = np.array([0.0,1.0,0.0])
+    elif axis == 'z':
+        # in this case, the x-axis runs along image-x-axis
+        #               the y-axis runs along image-y-axis
+        aligned_ax_index, imX_axIndex, imY_axIndex = 2, 0, 1
+        ray_vec = np.array([0.0,0.0,1.0])
+    else:
+        raise ValueError("The axis argument expects a value of 'x', 'y' or 'z'")
+
+    # retrieve the position component varying along image-x-axis
+    imX_pos_vals = (
+        spatial_props.left_edge[imX_axIndex] + 
+        spatial_props.cell_width[imX_axIndex] *
+        (0.5 + np.arange(spatial_props.grid_shape[imX_axIndex]))
+    )
+    # retrieve the position component varying along image-y-axis
+    imY_pos_vals = (
+        spatial_props.left_edge[imY_axIndex] + 
+        spatial_props.cell_width[imY_axIndex] *
+        (0.5 + np.arange(spatial_props.grid_shape[imY_axIndex]))
+    )
+
+    # now lets account for the relative position of the observer
+    if rel_observer_pos == 'left':
+        # put the observer just outside
+        aligned_ax_pos = (
+            spatial_props.left_edge -
+            spatial_props.cell_width)[aligned_ax_index]
+    elif rel_observer_pos == 'right':
+        # put the observer just outside
+        aligned_ax_pos = (
+            spatial_props.right_edge +
+            spatial_props.cell_width)[aligned_ax_index]
+        ray_vec *= -1 # flip the sign
+        # we also need to make the imX_pos_vals decrease as you go left to right
+        # -> the motivation for doing this can be understood if you imagine
+        #    being the observer and being rotated around the simulation
+        imX_pos_vals = imX_pos_vals[::-1]
+    else:
+        raise ValueError("rel_observer_pos must be 'left' or 'right'")
+
+    # construct the a 3D array of starting position.
+    # The shape of this array is:
+    ray_start = np.full(shape = (imY_pos_vals.size, imX_pos_vals.size, 3),
+                        dtype = 'f8', fill_value = np.nan)
+
+    # fill in the positions for the aligned axis
+    ray_start[:,:, aligned_ax_index] = aligned_ax_pos
+    ray_start[:,:, imX_axIndex] = imX_pos_vals[None, ...]
+    ray_start[:,:, imY_axIndex] = imY_pos_vals[..., None]
+
+    return ParallelRayGrid2D(ray_start = ds.arr(ray_start, length_unit),
+                             ray_vec = ray_vec)
