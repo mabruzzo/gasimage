@@ -239,6 +239,7 @@ class NoScatterRTAccumStrat:
 
     # instance attributes:
     obs_freq_Hz: np.ndarray
+    ignore_vLOS: bool
     line_props: LineProperties
     species_mass_g: float
     partition_func: Callable[[unyt.unyt_array], np.ndarray]
@@ -252,7 +253,8 @@ class NoScatterRTAccumStrat:
     def __init__(self, *, obs_freq: unyt.unyt_array,
                  line_props: LineProperties, species_mass_g: float,
                  partition_func: Callable[[unyt.unyt_array], np.ndarray],
-                 ndens_field: Tuple[str,str]):
+                 ndens_field: Tuple[str,str],
+                 ignore_vLOS: bool = False):
         assert np.ndim(obs_freq) == 1
         assert (obs_freq.size > 0) and (obs_freq.ndview > 0).all()
         # make obs_freq_Hz as immutable as possible
@@ -263,6 +265,7 @@ class NoScatterRTAccumStrat:
         self.species_mass_g = species_mass_g
         self.partition_func = partition_func
         self.ndens_field = ndens_field
+        self.ignore_vLOS = ignore_vLOS
 
     def do_work(self, grid, spatial_grid_props, full_ray_start, full_ray_uvec):
 
@@ -278,6 +281,7 @@ class NoScatterRTAccumStrat:
             ndens_field = self.ndens_field,
             partition_func = self.partition_func,
             doppler_parameter_b = 'normal',
+            ignore_vLOS = self.ignore_vLOS,
             out = None)
         return out
 
@@ -305,7 +309,8 @@ def freq_from_v_channels(v_channels, line_props):
 def configure_single_line_rt(line_props, species_mass_g, ndens_field, *,
                              kind = 'noscatter', observed_freq = None,
                              v_channels = None, partition_func = None,
-                             doppler_parameter_b = 'normal'):
+                             doppler_parameter_b = 'normal',
+                             ignore_vLOS = False):
     """
     Generate the configured accumulation strategy for radiative transfer.
 
@@ -378,12 +383,14 @@ def configure_single_line_rt(line_props, species_mass_g, ndens_field, *,
             line_props = line_props,
             species_mass_g = species_mass_g,
             partition_func = partition_func,
-            ndens_field = ndens_field
+            ndens_field = ndens_field,
+            ignore_vLOS = ignore_vLOS
         )
     elif kind == 'noscatter21cm':
         raise NotImplementedError("this hasn't been tested quite yet")
     elif kind == 'opticallyThin21cm':
         raise RuntimeError("This hasn't been tested quite yet")
+        assert ignore_vLOS == False
 
         return OpticallyThinAccumStrat(
             obs_freq = observed_freq,

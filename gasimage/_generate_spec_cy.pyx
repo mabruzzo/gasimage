@@ -564,6 +564,7 @@ def generate_ray_spectrum(grid, spatial_grid_props,
                           particle_mass_in_grams, obs_freq,
                           ndens_strat, ndens_field, partition_func = None,
                           doppler_parameter_b = None,
+                          ignore_vLOS = False,
                           out = None):
     # By default, ``ndens_HI_n1state_field`` is set to the yt-field specifying
     # the number density of all neutral Hydrogen. See the docstring of
@@ -589,14 +590,20 @@ def generate_ray_spectrum(grid, spatial_grid_props,
     # get factor that must be multiplied by this ndens to convert to cm**-3
     unit_conversions.ndens_to_cc_factor = float(
         grid[ndens_field].uq.to('cm**-3').v)
-    ndens_grid = grid[ndens_field]
+    ndens_grid = grid[ndens_field].ndview
     grid_data.ndens = ndens_grid
 
     # load in velocity information:
 
-    tmp_vx = grid['gas', 'velocity_x']
-    tmp_vy = grid['gas', 'velocity_y']
-    tmp_vz = grid['gas', 'velocity_z']
+    if ignore_vLOS:
+        shape = ndens_grid.shape
+        tmp_vx = unyt.unyt_array(np.zeros(dtype = 'f8', shape = shape), 'cm/s')
+        tmp_vy = unyt.unyt_array(np.zeros(dtype = 'f8', shape = shape), 'cm/s')
+        tmp_vz = unyt.unyt_array(np.zeros(dtype = 'f8', shape = shape), 'cm/s')
+    else:
+        tmp_vx = grid['gas', 'velocity_x']
+        tmp_vy = grid['gas', 'velocity_y']
+        tmp_vz = grid['gas', 'velocity_z']
     assert ((tmp_vx.units == tmp_vy.units) and (tmp_vx.units == tmp_vx.units))
     # compute the factor that must be multiplied by velocity to convert to cm/s
     unit_conversions.vel_to_cm_per_s_factor = float(tmp_vx.uq.to('cm/s').v)
