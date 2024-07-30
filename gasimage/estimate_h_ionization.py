@@ -384,10 +384,7 @@ def create_nHI_field_gracklemmw(ds,
 
         # prepare the mean-molecular-weight
 
-        # TODO: generalize to ('gas','temperature')
-        T_vals = data['enzoe', 'temperature']
-        T_vals = _coerce_missing_units(
-            ds, T_vals, ('enzoe', 'temperature'))
+        T_vals = data['gas', 'temperature']
 
         eint = data['enzoe', 'internal_energy']
         gm1 = ds.gamma - 1.0
@@ -454,6 +451,10 @@ class EnzoEUsefulFieldAdder:
               doubly-ionized before any Hydrogen is ionized).
     ndens_HI_add_field_kwargs : dict, Optional
         kwargs to forward ``ds.add_field``.
+    grackle_data_file_for_temperature: str, Optional
+        When this is specified, the file is used with pygrackle to compute
+        temeperature for the dataset. It is primarily intended for use with
+        adiabatic simulations.
     """
 
     def __init__(self, *,
@@ -461,7 +462,8 @@ class EnzoEUsefulFieldAdder:
                  globally_fixed_metallicity = None, 
                  metal_density_field = None,
                  ionization_case = 'max_H_ionization',
-                 ndens_HI_add_field_kwargs = {}):
+                 ndens_HI_add_field_kwargs = {},
+                 grackle_data_file_for_temperature = None):
 
         _check_ionization_case_kwarg(ionization_case)
         _check_metallicity_AND_metal_dens_args(
@@ -476,6 +478,9 @@ class EnzoEUsefulFieldAdder:
             'add_field_kwargs' : ndens_HI_add_field_kwargs
         }
 
+        self._grackle_data_file_for_temperature = (
+            grackle_data_file_for_temperature)
+
     def __call__(self, ds):
         # just as a convenience, sure the ('gas','temperature') field exists
         # create ('gas','temperature') field (with correct units!)
@@ -483,8 +488,76 @@ class EnzoEUsefulFieldAdder:
         # I should really work on improving the yt-frontend to make sure it's
         # defined automatically for us!
 
-        if ( (('enzoe','temperature') in ds.field_list) and
-             (('gas','temperature') not in ds.field_list) ):
+        has_enzoe_temperature = (('enzoe','temperature') in ds.field_list)
+        has_gas_temperature = (('gas','temperature')
+                               in ds.derived_field_list)
+
+
+        if self._grackle_data_file_for_temperature:
+            assert (not has_enzoe_temperature) and (not has_gas_temperature)
+            metallicity = self.create_nHI_field_gracklemmw_kwargs.get(
+                'globally_fixed_metallicity')
+            assert metallicity is not None
+            zsolar = _grackle_dflts('SolarMetalFractionByMass')
+            metal_mass_frac = zsolar * metallicity
+
+            if has_gas_temperature:
+                raise RuntimeError(
+                    "EnzoEUsefulFieldAdder is configured to invoke grackle to "
+                    "a temperature field (but the ds already has it).")
+
+            def _temperature(field, data):
+                import pygrackle
+                my_chem = pygrackle.chemistry_data()
+                my_chem.comoving_coordinates = 0
+                my_chem.a_units = 1.0
+                my_chem.a_value = 1.0
+                ds = data.ds
+                my_chem.density_units = float(ds.quan(1.0, 'code_density').to('g/cm**3').v)
+                my_chem.time_units = float(ds.quan(1.0, 'code_time').to('s').v)
+                my_chem.length_units = float(ds.quan(1.0, 'code_length').to('cm').v)
+                my_chem.set_velocity_units()
+
+                my_chem.use_grackle = 1
+                my_chem.with_radiative_cooling = 1
+                my_chem.primordial_chemistry = 0
+                my_chem.metal_cooling = 1
+                my_chem.UVbackground = 1
+                my_chem.self_shielding_method = 0
+                my_chem.H2_self_shielding = 0
+                my_chem.grackle_data_file = self._grackle_data_file_for_temperature
+
+                assert my_chem.initialize() != 0
+
+                rho = data["enzoe", "density"]
+                if ('enzoe', 'internal_energy') in ds.field_list:
+                    eint = data['enzoe','internal_energy']
+                else:
+                    ke = rho * (
+                        np.square(data['enzoe','velocity_x']) +
+                        np.square(data['enzoe','velocity_y']) +
+                        np.square(data['enzoe','velocity_z'])
+                    )
+                    eint = data['enzoe','total_energy'] - ke
+
+                out_shape = rho.shape
+                rho = (rho.to('code_density').ndview).flatten()
+                eint = eint.to('code_velocity**2').ndview.flatten()
+                metal_density = rho * metal_mass_frac
+
+                fc = pygrackle.FluidContainer(my_chem, rho.size)
+                fc['density'][:] = rho
+                fc['energy'][:] = eint
+                fc['metal'][:] = metal_density
+                fc.calculate_temperature()
+                temperature = fc['temperature'].copy()
+                temperature.shape = out_shape
+                return ds.arr(temperature, 'K')
+
+            ds.add_field(('gas', 'temperature'), function = _temperature,
+                         sampling_type = 'local', take_log = True, units = 'K')
+
+        elif has_enzoe_temperature and (not has_gas_temperature):
             print("The ('gas','temperature') doesn't exist. So we're defining "
                   "it using the ('enzoe','temperature') field")
 
